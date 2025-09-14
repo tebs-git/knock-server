@@ -1,56 +1,47 @@
-const express = require('express');
-const admin = require('firebase-admin');
-const cors = require('cors');
-const app = express();
-const port = process.env.PORT || 3000;
+const express = require("express");
+const admin = require("firebase-admin");
+const cors = require("cors");
 
-// Middleware
+admin.initializeApp({
+  credential: admin.credential.cert({
+    projectId: process.env.PROJECT_ID,
+    clientEmail: process.env.CLIENT_EMAIL,
+    privateKey: process.env.PRIVATE_KEY.replace(/\\n/g, '\n'), // fix newlines
+  }),
+});
+
+const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Initialize Firebase Admin SDK with Environment Variables from Render
-admin.initializeApp({
-  credential: admin.credential.cert({
-    "project_id": process.env.PROJECT_ID,
-    "private_key": process.env.PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    "client_email": process.env.CLIENT_EMAIL,
-  })
-});
-
-// Health check endpoint
-app.get('/', (req, res) => {
-  res.send('Knock Knock Server is running!');
-});
-
-// Endpoint to send knock notifications
-app.post('/knock', async (req, res) => {
+// POST endpoint to send a "knock" notification
+app.post("/", async (req, res) => {
   try {
-    const { token } = req.body; // Get the token from the request
-
+    const { token } = req.body;
     if (!token) {
-      return res.status(400).json({ error: 'Token is required' });
+      return res.status(400).json({ error: "No token provided" });
     }
 
     const message = {
-      data: {
-        type: 'knock',
-        title: 'Knock Knock!',
-        message: 'Someone is at your door!'
+      token: token,
+      data: { type: "knock" },
+      notification: {
+        title: "Knock Knock!",
+        body: "Someone is at the door 🚪",
       },
-      token: token
     };
 
     const response = await admin.messaging().send(message);
-    console.log('Knock sent successfully:', response);
-    res.json({ success: true, messageId: response });
+    console.log("Message sent successfully:", response);
 
-  } catch (error) {
-    console.error('Error sending message:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.json({ success: true, response });
+  } catch (err) {
+    console.error("Error sending message:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Start the server
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Knock Knock server running on port ${PORT}`);
 });
