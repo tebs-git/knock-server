@@ -1,3 +1,5 @@
+const { Firestore } = require('@google-cloud/firestore');
+const firestore = new Firestore();
 const express = require("express");
 const admin = require("firebase-admin");
 const cors = require("cors");
@@ -58,3 +60,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Knock Knock server running on port ${PORT}`);
 });
+
