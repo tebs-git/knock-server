@@ -32,32 +32,37 @@ app.post("/register", (req, res) => {
 
 // Visitor knocks on door
 app.post("/knock", async (req, res) => {
-  const doorToken = tokens["door"];
-  if (!doorToken) {
-    return res.status(400).json({ error: "No door device registered" });
-  }
-
-  const message = {
-    token: doorToken,
-    data: { type: "knock" },
-    notification: {
-      title: "Knock Knock!",
-      body: "Someone is at the door 🚪",
-    },
-  };
-
   try {
+    // Get the door token from Firestore
+    const doc = await firestore.collection("roles").doc("door").get();
+    if (!doc.exists) {
+      return res.status(404).json({ error: "No door registered" });
+    }
+
+    const doorToken = doc.data().token;
+
+    const message = {
+      token: doorToken,
+      notification: {
+        title: "Knock Knock!",
+        body: "Someone is at the door 🚪",
+      },
+      data: { type: "knock" }
+    };
+
     const response = await admin.messaging().send(message);
     console.log("Knock sent to door:", response);
-    res.json({ success: true });
+    res.json({ success: true, response });
   } catch (err) {
     console.error("Error sending knock:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Knock Knock server running on port ${PORT}`);
 });
+
 
