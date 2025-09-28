@@ -1,5 +1,4 @@
-const { Firestore } = require('@google-cloud/firestore');
-const firestore = new Firestore();
+const firestore = admin.firestore();;
 const express = require("express");
 const admin = require("firebase-admin");
 const cors = require("cors");
@@ -33,7 +32,7 @@ app.post("/register", (req, res) => {
 // Visitor knocks on door
 app.post("/knock", async (req, res) => {
   try {
-    // Get the door token from Firestore
+    // Get the door token from Firestore via firebase-admin
     const doc = await firestore.collection("roles").doc("door").get();
     if (!doc.exists) {
       return res.status(404).json({ error: "No door registered" });
@@ -60,9 +59,11 @@ app.post("/knock", async (req, res) => {
 });
 
 
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Knock Knock server running on port ${PORT}`);
 });
+
 
 
