@@ -1,4 +1,3 @@
-const firestore = admin.firestore();;
 const express = require("express");
 const admin = require("firebase-admin");
 const cors = require("cors");
@@ -11,28 +10,33 @@ admin.initializeApp({
   }),
 });
 
+const firestore = admin.firestore();   // ✅ use admin's Firestore
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// In-memory token store (reset when server restarts)
-const tokens = {};
+// Register device role and token → saves in Firestore
+app.post("/register", async (req, res) => {
+  try {
+    const { role, token } = req.body;
+    if (!role || !token) {
+      return res.status(400).json({ error: "role and token are required" });
+    }
 
-// Register device role and token
-app.post("/register", (req, res) => {
-  const { role, token } = req.body;
-  if (!role || !token) {
-    return res.status(400).json({ error: "role and token are required" });
+    await firestore.collection("roles").doc(role).set({ token });
+    console.log(`Registered ${role} with token ${token}`);
+
+    res.json({ success: true, message: `${role} registered` });
+  } catch (err) {
+    console.error("Error registering role:", err);
+    res.status(500).json({ error: err.message });
   }
-  tokens[role] = token;
-  console.log(`Registered ${role} with token ${token}`);
-  res.json({ success: true, message: `${role} registered` });
 });
 
-// Visitor knocks on door
+// Visitor knocks → server looks up door token in Firestore → sends FCM
 app.post("/knock", async (req, res) => {
   try {
-    // Get the door token from Firestore via firebase-admin
     const doc = await firestore.collection("roles").doc("door").get();
     if (!doc.exists) {
       return res.status(404).json({ error: "No door registered" });
@@ -51,6 +55,7 @@ app.post("/knock", async (req, res) => {
 
     const response = await admin.messaging().send(message);
     console.log("Knock sent to door:", response);
+
     res.json({ success: true, response });
   } catch (err) {
     console.error("Error sending knock:", err);
@@ -58,12 +63,7 @@ app.post("/knock", async (req, res) => {
   }
 });
 
-
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Knock Knock server running on port ${PORT}`);
 });
-
-
-
