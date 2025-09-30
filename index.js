@@ -46,12 +46,12 @@ app.post("/knock", async (req, res) => {
 
     const message = {
       token: doorToken,
-      notification: {
+      data: {
         title: "Knock Knock!",
         body: "Someone is at the door 🚪",
-      },
-      data: { type: "knock" }
-    };
+        type: "knock"
+      }
+     };
 
     const response = await admin.messaging().send(message);
     console.log("Knock sent to door:", response);
@@ -67,3 +67,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Knock Knock server running on port ${PORT}`);
 });
+
