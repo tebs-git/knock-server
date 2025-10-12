@@ -6,7 +6,7 @@ admin.initializeApp({
   credential: admin.credential.cert({
     projectId: process.env.PROJECT_ID,
     clientEmail: process.env.CLIENT_EMAIL,
-    privateKey: process.env.PRIVATE_KEY.replace(/\\n/g, '\n'),
+    privateKey: process.env.PRIVATE_KEY.replace(/\\n/g, '\n'), // fix newlines
   }),
 });
 
@@ -14,18 +14,20 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// POST endpoint to send a "knock" notification
 app.post("/", async (req, res) => {
   try {
     const { token } = req.body;
-    if (!token) return res.status(400).json({ error: "No token provided" });
+    if (!token) {
+      return res.status(400).json({ error: "No token provided" });
+    }
 
     const message = {
-      token,
-      android: { priority: "high" },
-      data: {
+      token: token,
+      data: { type: "knock" },
+      notification: {
         title: "Knock Knock!",
         body: "Someone is at the door 🚪",
-        type: "knock",
       },
     };
 
@@ -40,4 +42,6 @@ app.post("/", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Knock Knock server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Knock Knock server running on port ${PORT}`);
+});
