@@ -10,112 +10,60 @@ admin.initializeApp({
   }),
 });
 
+const firestore = admin.firestore();   // ✅ use admin's Firestore
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.post("/knock", async (req, res) => {
+// Register device role and token → saves in Firestore
+app.post("/register", async (req, res) => {
   try {
-    console.log("Knock request received");
-    
-    // Get door token from Firestore (you'll need to implement this)
-    const db = admin.firestore();
-    const doorDoc = await db.collection("roles").doc("door").get();
-    
-    if (!doorDoc.exists) {
-      console.log("No door device registered");
-      return res.status(400).json({ error: "No door device registered" });
+    const { role, token } = req.body;
+    if (!role || !token) {
+      return res.status(400).json({ error: "role and token are required" });
     }
 
-    const doorToken = doorDoc.data().token;
-    console.log("Sending to door token:", doorToken);
+    await firestore.collection("roles").doc(role).set({ token });
+    console.log(`Registered ${role} with token ${token}`);
 
-    const message = {
-      token: doorToken,
-      notification: {
-        title: "Knock Knock!",
-        body: "Someone is at the door 🚪"
-      },
-      data: {
-        type: "knock",
-        timestamp: new Date().toISOString()
-      },
-      android: {
-        priority: "high",
-        ttl: 60 * 60 * 24 // 24 hours in seconds
-      },
-      apns: {
-        headers: {
-          "apns-priority": "10"
-        },
-        payload: {
-          aps: {
-            contentAvailable: true,
-            sound: "default"
-          }
-        }
-      }
-    };
-
-    console.log("Sending FCM message...");
-    const response = await admin.messaging().send(message);
-    console.log("Message sent successfully:", response);
-
-    res.json({ 
-      success: true, 
-      message: "Knock sent successfully",
-      messageId: response 
-    });
-    
+    res.json({ success: true, message: `${role} registered` });
   } catch (err) {
-    console.error("Error sending message:", err);
-    res.status(500).json({ 
-      error: err.message,
-      code: err.code || 'unknown' 
-    });
+    console.error("Error registering role:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Health check endpoint
-app.get("/health", (req, res) => {
-  res.json({ status: "OK", timestamp: new Date().toISOString() });
-});
-
-// Test endpoint to verify server is working
-app.post("/test", async (req, res) => {
+// Visitor knocks → server looks up door token in Firestore → sends FCM
+app.post("/knock", async (req, res) => {
   try {
-    const { token } = req.body;
-    if (!token) return res.status(400).json({ error: "No token provided" });
+    const doc = await firestore.collection("roles").doc("door").get();
+    if (!doc.exists) {
+      return res.status(404).json({ error: "No door registered" });
+    }
+
+    const doorToken = doc.data().token;
 
     const message = {
-      token: token,
-      notification: {
-        title: "Test Notification",
-        body: "This is a test message from your server"
-      },
-      android: {
-        priority: "high"
+      token: doorToken,
+      data: {
+        title: "Knock Knock!",
+        body: "Someone is at the door 🚪",
+        type: "knock"
       }
-    };
+     };
 
     const response = await admin.messaging().send(message);
-    console.log("Test message sent successfully:", response);
+    console.log("Knock sent to door:", response);
 
     res.json({ success: true, response });
   } catch (err) {
-    console.error("Error sending test message:", err);
+    console.error("Error sending knock:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Knock Knock server running on port ${PORT}`));
-
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+app.listen(PORT, () => {
+  console.log(`Knock Knock server running on port ${PORT}`);
 });
