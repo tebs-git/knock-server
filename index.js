@@ -2,6 +2,7 @@ const express = require("express");
 const admin = require("firebase-admin");
 const cors = require("cors");
 
+// Initialize Firebase
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: process.env.PROJECT_ID,
@@ -14,24 +15,32 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Simple knock endpoint - back to basics
+// ✅ ADD THIS - Root endpoint for health checks
+app.get("/", (req, res) => {
+  console.log("✅ Root endpoint hit - server is working");
+  res.json({ 
+    status: "OK", 
+    message: "Knock Knock Server is running!",
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ✅ Knock endpoint
 app.post("/knock", async (req, res) => {
   try {
-    console.log("🔔 Knock received at:", new Date().toISOString());
+    console.log("🔔 KNOCK ENDPOINT HIT!");
     
-    // Get door token from Firestore
     const db = admin.firestore();
     const doorDoc = await db.collection("roles").doc("door").get();
     
     if (!doorDoc.exists) {
-      console.log("❌ No door device registered");
-      return res.status(400).json({ error: "No door device registered" });
+      console.log("❌ No door registered");
+      return res.status(400).json({ error: "No door registered" });
     }
 
     const doorToken = doorDoc.data().token;
-    console.log("✅ Sending to door token");
+    console.log("✅ Door token found");
 
-    // Simple message that should work
     const message = {
       token: doorToken,
       notification: {
@@ -39,41 +48,26 @@ app.post("/knock", async (req, res) => {
         body: "Someone is at the door 🚪"
       },
       data: {
-        type: "knock",
-        timestamp: new Date().toISOString()
+        type: "knock"
+      },
+      android: {
+        priority: "high"
       }
     };
 
     console.log("📤 Sending FCM message...");
     const response = await admin.messaging().send(message);
-    console.log("✅ Message sent successfully:", response);
+    console.log("✅ FCM Message sent successfully!");
 
-    res.json({ 
-      success: true, 
-      message: "Knock sent successfully",
-      messageId: response 
-    });
+    res.json({ success: true, message: "Knock sent!" });
     
   } catch (err) {
-    console.error("❌ Error sending message:", err);
-    res.status(500).json({ 
-      error: err.message,
-      code: err.code || 'unknown' 
-    });
+    console.error("❌ ERROR in knock endpoint:", err);
+    res.status(500).json({ error: err.message });
   }
-});
-
-// Health check
-app.get("/", (req, res) => {
-  res.json({ 
-    status: "OK", 
-    service: "Knock Knock Server",
-    timestamp: new Date().toISOString()
-  });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Knock Knock server running on port ${PORT}`);
-  console.log(`✅ Health check: https://your-render-url.onrender.com/`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
