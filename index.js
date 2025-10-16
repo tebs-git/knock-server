@@ -37,28 +37,46 @@ app.post("/register", async (req, res) => {
 // Visitor knocks → server looks up door token in Firestore → sends FCM
 app.post("/knock", async (req, res) => {
   try {
+    console.log("🔔 Knock endpoint called");
+    
     const doc = await firestore.collection("roles").doc("door").get();
     if (!doc.exists) {
+      console.log("❌ No door registered in Firestore");
       return res.status(404).json({ error: "No door registered" });
     }
 
     const doorToken = doc.data().token;
+    console.log("✅ Found door token:", doorToken ? "Token exists" : "Token missing");
 
     const message = {
       token: doorToken,
-      data: {
+      notification: {  // ✅ ADD THIS
         title: "Knock Knock!",
-        body: "Someone is at the door 🚪",
-        type: "knock"
+        body: "Someone is at the door 🚪"
+      },
+      data: {
+        type: "knock",
+        timestamp: new Date().toISOString()
+      },
+      android: {  // ✅ ADD THIS
+        priority: "high"
+      },
+      apns: {
+        payload: {
+          aps: {
+            contentAvailable: true
+          }
+        }
       }
-     };
+    };
 
+    console.log("📤 Sending FCM message...");
     const response = await admin.messaging().send(message);
-    console.log("Knock sent to door:", response);
+    console.log("✅ Knock sent to door successfully:", response);
 
     res.json({ success: true, response });
   } catch (err) {
-    console.error("Error sending knock:", err);
+    console.error("❌ Error sending knock:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -67,3 +85,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Knock Knock server running on port ${PORT}`);
 });
+
