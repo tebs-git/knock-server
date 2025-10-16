@@ -10,79 +10,70 @@ admin.initializeApp({
   }),
 });
 
-const firestore = admin.firestore();   // ✅ use admin's Firestore
-
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Register device role and token → saves in Firestore
-app.post("/register", async (req, res) => {
-  try {
-    const { role, token } = req.body;
-    if (!role || !token) {
-      return res.status(400).json({ error: "role and token are required" });
-    }
-
-    await firestore.collection("roles").doc(role).set({ token });
-    console.log(`Registered ${role} with token ${token}`);
-
-    res.json({ success: true, message: `${role} registered` });
-  } catch (err) {
-    console.error("Error registering role:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Visitor knocks → server looks up door token in Firestore → sends FCM
+// Simple knock endpoint - back to basics
 app.post("/knock", async (req, res) => {
   try {
-    console.log("🔔 Knock endpoint called");
+    console.log("🔔 Knock received at:", new Date().toISOString());
     
-    const doc = await firestore.collection("roles").doc("door").get();
-    if (!doc.exists) {
-      console.log("❌ No door registered in Firestore");
-      return res.status(404).json({ error: "No door registered" });
+    // Get door token from Firestore
+    const db = admin.firestore();
+    const doorDoc = await db.collection("roles").doc("door").get();
+    
+    if (!doorDoc.exists) {
+      console.log("❌ No door device registered");
+      return res.status(400).json({ error: "No door device registered" });
     }
 
-    const doorToken = doc.data().token;
-    console.log("✅ Found door token:", doorToken ? "Token exists" : "Token missing");
+    const doorToken = doorDoc.data().token;
+    console.log("✅ Sending to door token");
 
+    // Simple message that should work
     const message = {
       token: doorToken,
-      notification: {  // ✅ ADD THIS
+      notification: {
         title: "Knock Knock!",
         body: "Someone is at the door 🚪"
       },
       data: {
         type: "knock",
         timestamp: new Date().toISOString()
-      },
-      android: {  // ✅ ADD THIS
-        priority: "high"
-      },
-      apns: {
-        payload: {
-          aps: {
-            contentAvailable: true
-          }
-        }
       }
     };
 
     console.log("📤 Sending FCM message...");
     const response = await admin.messaging().send(message);
-    console.log("✅ Knock sent to door successfully:", response);
+    console.log("✅ Message sent successfully:", response);
 
-    res.json({ success: true, response });
+    res.json({ 
+      success: true, 
+      message: "Knock sent successfully",
+      messageId: response 
+    });
+    
   } catch (err) {
-    console.error("❌ Error sending knock:", err);
-    res.status(500).json({ error: err.message });
+    console.error("❌ Error sending message:", err);
+    res.status(500).json({ 
+      error: err.message,
+      code: err.code || 'unknown' 
+    });
   }
+});
+
+// Health check
+app.get("/", (req, res) => {
+  res.json({ 
+    status: "OK", 
+    service: "Knock Knock Server",
+    timestamp: new Date().toISOString()
+  });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Knock Knock server running on port ${PORT}`);
+  console.log(`🚀 Knock Knock server running on port ${PORT}`);
+  console.log(`✅ Health check: https://your-render-url.onrender.com/`);
 });
-
