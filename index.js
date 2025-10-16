@@ -46,12 +46,30 @@ app.post("/knock", async (req, res) => {
 
     const message = {
       token: doorToken,
-      data: {
+      // ✅ ADD NOTIFICATION PAYLOAD - This makes the system show the notification
+      notification: {
         title: "Knock Knock!",
-        body: "Someone is at the door 🚪",
-        type: "knock"
+        body: "Someone is at the door 🚪"
+      },
+      // ✅ KEEP DATA PAYLOAD - For your app's custom handling
+      data: {
+        type: "knock",
+        timestamp: new Date().toISOString()
+      },
+      // ✅ ADD ANDROID PRIORITY - For vibrate mode and deep sleep
+      android: {
+        priority: "high"
+      },
+      // ✅ ADD APNS FOR CROSS-PLATFORM COMPATIBILITY
+      apns: {
+        payload: {
+          aps: {
+            contentAvailable: true,
+            sound: "default"
+          }
+        }
       }
-     };
+    };
 
     const response = await admin.messaging().send(message);
     console.log("Knock sent to door:", response);
@@ -61,6 +79,15 @@ app.post("/knock", async (req, res) => {
     console.error("Error sending knock:", err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ✅ ADD ROOT ENDPOINT FOR HEALTH CHECKS
+app.get("/", (req, res) => {
+  res.json({ 
+    status: "OK", 
+    message: "Knock Knock Server is running",
+    timestamp: new Date().toISOString()
+  });
 });
 
 const PORT = process.env.PORT || 3000;
