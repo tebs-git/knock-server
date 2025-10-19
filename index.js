@@ -44,30 +44,17 @@ app.post("/knock", async (req, res) => {
 
     const doorToken = doc.data().token;
 
-    const message = {
+   const message = {
       token: doorToken,
-      // ✅ USE NOTIFICATION PAYLOAD - System will show notification automatically
-      notification: {
-        title: "Knock Knock!",
-        body: "Someone is at the door 🚪"
-      },
-      // ✅ ADD DATA PAYLOAD for your app to handle custom sound
+      // Only 'data' payload, no 'notification'
       data: {
-        type: "knock",
-        timestamp: new Date().toISOString(),
-        custom_sound: "true"
-      },
+        title: "Knock Knock!",
+        body: "Someone is at the door 🚪",
+        type: "knock"
+       },
       android: {
         priority: "high"
-      },
-      apns: {
-        payload: {
-          aps: {
-            sound: "default",
-            contentAvailable: true
-          }
-        }
-      }
+       }
     };
 
     const response = await admin.messaging().send(message);
@@ -88,3 +75,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Knock Knock server running on port ${PORT}`);
 });
+
