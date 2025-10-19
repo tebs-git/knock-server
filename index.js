@@ -46,14 +46,27 @@ app.post("/knock", async (req, res) => {
 
     const message = {
       token: doorToken,
-      data: {  // ✅ Use DATA payload only - this ensures your onMessageReceived is always called
+      // ✅ USE NOTIFICATION PAYLOAD - System will show notification automatically
+      notification: {
         title: "Knock Knock!",
-        body: "Someone is at the door 🚪",
+        body: "Someone is at the door 🚪"
+      },
+      // ✅ ADD DATA PAYLOAD for your app to handle custom sound
+      data: {
         type: "knock",
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        custom_sound: "true"
       },
       android: {
-        priority: "high"  // ✅ High priority for wake-up
+        priority: "high"
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: "default",
+            contentAvailable: true
+          }
+        }
       }
     };
 
