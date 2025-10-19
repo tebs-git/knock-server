@@ -34,39 +34,40 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// Visitor knocks - DATA-ONLY MESSAGE
+// Visitor knocks - DATA-ONLY MESSAGE (ensures onMessageReceived is called)
 app.post("/knock", async (req, res) => {
   try {
-    console.log("🎯 KNOCK ENDPOINT HIT - DATA-ONLY VERSION");
+    console.log("🔔 Knock endpoint hit - DATA ONLY VERSION");
     
     const doc = await firestore.collection("roles").doc("door").get();
     if (!doc.exists) {
+      console.log("❌ No door registered");
       return res.status(404).json({ error: "No door registered" });
     }
 
     const doorToken = doc.data().token;
+    console.log("✅ Sending to door token");
 
     const message = {
       token: doorToken,
+      // ✅ DATA-ONLY - This ensures onMessageReceived is ALWAYS called
       data: {
         title: "Knock Knock!",
         body: "Someone is at the door 🚪",
-        type: "knock",
-        debug: "DATA-ONLY-MESSAGE"
+        type: "knock"
       },
       android: {
-        priority: "high"
+        priority: "high"  // ✅ Wake up device
       }
     };
 
-    console.log("📤 SENDING DATA-ONLY MESSAGE:", JSON.stringify(message));
-    
+    console.log("📤 Sending DATA-ONLY message to FCM...");
     const response = await admin.messaging().send(message);
-    console.log("✅ DATA-ONLY MESSAGE SENT TO FCM");
+    console.log("✅ DATA-ONLY message sent to FCM");
 
-    res.json({ success: true, message: "Data-only knock sent" });
+    res.json({ success: true, response });
   } catch (err) {
-    console.error("❌ Error:", err);
+    console.error("❌ Error sending knock:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -84,5 +85,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Knock Knock server running on port ${PORT}`);
 });
-
-
