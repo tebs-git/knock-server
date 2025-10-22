@@ -15,10 +15,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Register a device with its token
+// ✅ Register a device with its token AND home network
 app.post("/register", async (req, res) => {
   try {
-    const { deviceId, token, name } = req.body;
+    const { deviceId, token, name, currentSSID } = req.body;
     if (!deviceId || !token) {
       return res.status(400).json({ error: "deviceId and token are required" });
     }
@@ -26,22 +26,61 @@ app.post("/register", async (req, res) => {
     await firestore.collection("devices").doc(deviceId).set({
       token,
       name: name || "Unknown Device",
+      homeSSID: currentSSID || "Unknown", // Store the home network
       lastActive: new Date().toISOString(),
     });
 
-    console.log(`Registered device: ${deviceId}`);
-    res.json({ success: true, message: `Device ${deviceId} registered` });
+    console.log(`Registered device: ${deviceId} on network: ${currentSSID}`);
+    res.json({ success: true, message: `Device ${deviceId} registered on ${currentSSID}` });
   } catch (err) {
     console.error("Error registering device:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ Broadcast a knock to all other devices
+// ✅ Check if current network matches registered network
+app.post("/check-network", async (req, res) => {
+  try {
+    const { deviceId, currentSSID } = req.body;
+    if (!deviceId || !currentSSID) {
+      return res.status(400).json({ error: "deviceId and currentSSID are required" });
+    }
+
+    const doc = await firestore.collection("devices").doc(deviceId).get();
+    if (!doc.exists) {
+      return res.status(404).json({ error: "Device not registered" });
+    }
+
+    const deviceData = doc.data();
+    const isRegistered = deviceData.homeSSID === currentSSID;
+
+    res.json({ 
+      isRegistered,
+      currentSSID,
+      homeSSID: deviceData.homeSSID 
+    });
+  } catch (err) {
+    console.error("Error checking network:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ Broadcast a knock to all other devices (with network verification)
 app.post("/broadcast", async (req, res) => {
   try {
-    const { senderId } = req.body;
+    const { senderId, currentSSID } = req.body;
     if (!senderId) return res.status(400).json({ error: "senderId required" });
+
+    // Verify sender is on their registered network
+    const senderDoc = await firestore.collection("devices").doc(senderId).get();
+    if (!senderDoc.exists) {
+      return res.status(404).json({ error: "Sender device not registered" });
+    }
+
+    const senderData = senderDoc.data();
+    if (senderData.homeSSID !== currentSSID) {
+      return res.status(403).json({ error: "Not on home network" });
+    }
 
     const snapshot = await firestore.collection("devices").get();
     const tokens = [];
@@ -67,7 +106,7 @@ app.post("/broadcast", async (req, res) => {
     };
 
     const response = await admin.messaging().sendEachForMulticast(message);
-    console.log(`Broadcast sent to ${tokens.length} devices`);
+    console.log(`Broadcast sent to ${tokens.length} devices from ${senderId}`);
     res.json({ success: true, count: tokens.length, response });
   } catch (err) {
     console.error("Error broadcasting:", err);
