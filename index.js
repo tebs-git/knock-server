@@ -2,7 +2,6 @@ const express = require("express");
 const admin = require("firebase-admin");
 const cors = require("cors");
 
-// ✅ Initialize Firebase Admin using Render environment variables
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: process.env.PROJECT_ID,
@@ -13,107 +12,57 @@ admin.initializeApp({
 
 const firestore = admin.firestore();
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
-// 🪪 Register device with token
+// ✅ Register a device role and token (door / visitor)
 app.post("/register", async (req, res) => {
   try {
-    const { deviceId, token } = req.body;
-    if (!deviceId || !token) {
-      return res.status(400).json({ error: "deviceId and token are required" });
+    const { role, token } = req.body;
+    if (!role || !token) {
+      return res.status(400).json({ error: "role and token are required" });
     }
 
-    await firestore.collection("devices").doc(deviceId).set({
-      token,
-      lastRegistered: new Date().toISOString()
-    });
-
-    console.log(`✅ Registered ${deviceId}`);
-    res.json({ success: true, message: `${deviceId} registered` });
+    await firestore.collection("roles").doc(role).set({ token });
+    console.log(`Registered ${role} with token`);
+    res.json({ success: true, message: `${role} registered` });
   } catch (err) {
-    console.error("Error registering device:", err);
+    console.error("Error registering role:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 🚪 Handle “Send Knock”
+// ✅ Visitor knocks → send FCM message to door
 app.post("/knock", async (req, res) => {
   try {
-    const { senderId, current_ssid, current_bssid } = req.body;
-
-    if (!senderId || !current_ssid || !current_bssid) {
-      return res.status(400).json({ error: "senderId, ssid, and bssid are required" });
+    const doc = await firestore.collection("roles").doc("door").get();
+    if (!doc.exists) {
+      return res.status(404).json({ error: "No door registered" });
     }
 
-    const householdRef = firestore.collection("households").doc("default");
-    const householdDoc = await householdRef.get();
-
-    // 🏡 If first time → store this Wi-Fi as household network
-    if (!householdDoc.exists) {
-      await householdRef.set({
-        trusted_ssid: current_ssid,
-        trusted_bssid: current_bssid,
-        registeredAt: new Date().toISOString()
-      });
-      console.log("🏠 Stored new household Wi-Fi fingerprint");
-    } else {
-      // Verify Wi-Fi match
-      const { trusted_bssid } = householdDoc.data();
-      if (trusted_bssid !== current_bssid) {
-        console.warn("❌ Knock rejected: wrong Wi-Fi");
-        return res.status(403).json({ error: "Not connected to the household Wi-Fi" });
-      }
-    }
-
-    // 📱 Get all registered devices (except sender)
-    const snapshot = await firestore.collection("devices").get();
-    const tokens = [];
-    snapshot.forEach(doc => {
-      if (doc.id !== senderId && doc.data().token) {
-        tokens.push(doc.data().token);
-      }
-    });
-
-    if (tokens.length === 0) {
-      return res.status(404).json({ error: "No other registered devices found" });
-    }
-
-    // 🔔 Create FCM data payload
+    const doorToken = doc.data().token;
     const message = {
-      tokens,
+      token: doorToken,
       data: {
         title: "Knock Knock!",
         body: "Someone is at the door 🚪",
         type: "knock",
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       },
-      android: {
-        priority: "high"
-      }
+      android: { priority: "high" },
     };
 
-    const response = await admin.messaging().sendMulticast(message);
-    console.log(`📨 Knock sent: ${response.successCount} successes, ${response.failureCount} failures`);
+    const response = await admin.messaging().send(message);
+    console.log("Knock sent to door:", response);
 
-    res.json({
-      success: true,
-      sent: response.successCount,
-      failed: response.failureCount
-    });
+    res.json({ success: true, response });
   } catch (err) {
     console.error("Error sending knock:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 🧭 Health check route
-app.get("/", (req, res) => {
-  res.json({ status: "OK", message: "Knock Knock server running" });
-});
+app.get("/", (req, res) => res.json({ status: "OK", message: "Server running" }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Knock Knock server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Knock Knock server running on port ${PORT}`));
