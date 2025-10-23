@@ -83,3 +83,4 @@ app.get("/", (req, res) => res.json({ status: "OK", message: "Knock Knock server
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Knock Knock server running on port ${PORT}`));
+
