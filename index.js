@@ -60,14 +60,13 @@ app.post("/broadcast", async (req, res) => {
     const message = {
       tokens,
       data: {
-        title: "WiFi Knock Signal",
-        body: "WiFi knock signal sent",
-        type: "wifi_signal",
+        title: "Knock Knock!",
+        body: "Someone is at the door 🚪",
+        type: "knock",
         timestamp: new Date().toISOString(),
-      },
-      android: { priority: "normal" },
-    };
-
+       },
+       android: { priority: "high" }, // This is what makes it wake phones!
+     };
     const response = await admin.messaging().sendEachForMulticast(message);
     console.log(`FCM signal sent to ${tokens.length} devices from ${senderId}`);
     res.json({ success: true, count: tokens.length, response });
@@ -82,3 +81,4 @@ app.get("/", (req, res) => res.json({ status: "OK", message: "Knock Knock server
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Knock Knock server running on port ${PORT}`));
+
