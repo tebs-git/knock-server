@@ -37,7 +37,7 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// ✅ Broadcast a knock to all other devices with HIGH PRIORITY FCM
+// ✅ Broadcast a knock to all other devices - DATA MESSAGES ONLY
 app.post("/broadcast", async (req, res) => {
   try {
     const { senderId, verificationToken } = req.body;
@@ -55,63 +55,47 @@ app.post("/broadcast", async (req, res) => {
       return res.status(404).json({ error: "No other devices registered" });
     }
 
-    // HIGH PRIORITY FCM message to wake phones from Doze
+    // DATA-ONLY MESSAGE - This ensures onMessageReceived() is always called
     const message = {
       tokens,
+      // NO "notification" field - this is crucial!
       data: {
         title: "Knock Knock!",
         body: "Someone is at the door 🚪",
         senderId: senderId,
-        verificationToken: verificationToken || "default",
+        verificationToken: verificationToken || "default", 
         type: "knock",
         timestamp: new Date().toISOString(),
+        click_action: "OPEN_MAIN_ACTIVITY" // Optional: action when notification clicked
       },
       android: {
-        priority: "high",        // ← HIGH PRIORITY for Android
-        ttl: 30000,              // 30 seconds time to live
-        notification: {
-          sound: "default",
-          priority: "max",       // ← MAX PRIORITY notification
-          default_sound: true,
-          default_vibrate_timings: true,
-          default_light_settings: true
-        }
+        priority: "high",
+        ttl: 30000, // 30 seconds
+        // No notification configuration here - only in data
       },
       apns: {
         headers: {
-          "apns-priority": "10", // ← HIGHEST PRIORITY for iOS
-          "apns-push-type": "alert"
+          "apns-priority": "10",
         },
         payload: {
           aps: {
-            contentAvailable: 1, // ← Wake up iOS apps
-            alert: {
-              title: "Knock Knock!",
-              body: "Someone is at the door 🚪"
-            },
+            contentAvailable: 1, // Wake up iOS apps
+            // No "alert" here - we handle notification in app
             sound: "default",
             badge: 1
           }
-        }
-      },
-      webpush: {
-        headers: {
-          Urgency: "high"        // ← HIGH PRIORITY for Web
         }
       }
     };
 
     const response = await admin.messaging().sendEachForMulticast(message);
-    console.log(`HIGH PRIORITY broadcast sent to ${tokens.length} devices`);
-    console.log(`Success count: ${response.successCount}, Failure count: ${response.failureCount}`);
+    console.log(`DATA-ONLY broadcast sent to ${tokens.length} devices`);
     
     res.json({ 
       success: true, 
-      count: tokens.length, 
-      response: {
-        successCount: response.successCount,
-        failureCount: response.failureCount
-      }
+      count: tokens.length,
+      successCount: response.successCount,
+      failureCount: response.failureCount
     });
   } catch (err) {
     console.error("Error broadcasting:", err);
