@@ -37,7 +37,7 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// ✅ Broadcast a knock to all other devices with UDP verification
+// ✅ Broadcast a knock to all other devices with HIGH PRIORITY FCM
 app.post("/broadcast", async (req, res) => {
   try {
     const { senderId, verificationToken } = req.body;
@@ -55,7 +55,7 @@ app.post("/broadcast", async (req, res) => {
       return res.status(404).json({ error: "No other devices registered" });
     }
 
-    // Send silent FCM with verification data
+    // HIGH PRIORITY FCM message to wake phones from Doze
     const message = {
       tokens,
       data: {
@@ -66,12 +66,53 @@ app.post("/broadcast", async (req, res) => {
         type: "knock",
         timestamp: new Date().toISOString(),
       },
-      android: { priority: "high" },
+      android: {
+        priority: "high",        // ← HIGH PRIORITY for Android
+        ttl: 30000,              // 30 seconds time to live
+        notification: {
+          sound: "default",
+          priority: "max",       // ← MAX PRIORITY notification
+          default_sound: true,
+          default_vibrate_timings: true,
+          default_light_settings: true
+        }
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10", // ← HIGHEST PRIORITY for iOS
+          "apns-push-type": "alert"
+        },
+        payload: {
+          aps: {
+            contentAvailable: 1, // ← Wake up iOS apps
+            alert: {
+              title: "Knock Knock!",
+              body: "Someone is at the door 🚪"
+            },
+            sound: "default",
+            badge: 1
+          }
+        }
+      },
+      webpush: {
+        headers: {
+          Urgency: "high"        // ← HIGH PRIORITY for Web
+        }
+      }
     };
 
     const response = await admin.messaging().sendEachForMulticast(message);
-    console.log(`Broadcast sent to ${tokens.length} devices with UDP verification`);
-    res.json({ success: true, count: tokens.length, response });
+    console.log(`HIGH PRIORITY broadcast sent to ${tokens.length} devices`);
+    console.log(`Success count: ${response.successCount}, Failure count: ${response.failureCount}`);
+    
+    res.json({ 
+      success: true, 
+      count: tokens.length, 
+      response: {
+        successCount: response.successCount,
+        failureCount: response.failureCount
+      }
+    });
   } catch (err) {
     console.error("Error broadcasting:", err);
     res.status(500).json({ error: err.message });
@@ -83,4 +124,3 @@ app.get("/", (req, res) => res.json({ status: "OK", message: "Knock Knock server
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Knock Knock server running on port ${PORT}`));
-
