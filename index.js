@@ -37,10 +37,10 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// ✅ Broadcast a knock to all other devices - DATA MESSAGES ONLY
+// ✅ Broadcast a knock to all other devices
 app.post("/broadcast", async (req, res) => {
   try {
-    const { senderId, verificationToken } = req.body;
+    const { senderId } = req.body;
     if (!senderId) return res.status(400).json({ error: "senderId required" });
 
     const snapshot = await firestore.collection("devices").get();
@@ -55,23 +55,18 @@ app.post("/broadcast", async (req, res) => {
       return res.status(404).json({ error: "No other devices registered" });
     }
 
-    // DATA-ONLY MESSAGE - This ensures onMessageReceived() is always called
+    // Simple data-only message
     const message = {
       tokens,
-      // NO "notification" field - this is crucial!
       data: {
         title: "Knock Knock!",
         body: "Someone is at the door 🚪",
         senderId: senderId,
-        verificationToken: verificationToken || "default", 
-        type: "knock",
         timestamp: new Date().toISOString(),
-        click_action: "OPEN_MAIN_ACTIVITY" // Optional: action when notification clicked
       },
       android: {
         priority: "high",
-        ttl: 30000, // 30 seconds
-        // No notification configuration here - only in data
+        ttl: 30000,
       },
       apns: {
         headers: {
@@ -79,8 +74,7 @@ app.post("/broadcast", async (req, res) => {
         },
         payload: {
           aps: {
-            contentAvailable: 1, // Wake up iOS apps
-            // No "alert" here - we handle notification in app
+            contentAvailable: 1,
             sound: "default",
             badge: 1
           }
@@ -89,7 +83,7 @@ app.post("/broadcast", async (req, res) => {
     };
 
     const response = await admin.messaging().sendEachForMulticast(message);
-    console.log(`DATA-ONLY broadcast sent to ${tokens.length} devices`);
+    console.log(`Broadcast sent to ${tokens.length} devices`);
     
     res.json({ 
       success: true, 
