@@ -60,16 +60,16 @@ app.post("/broadcast", async (req, res) => {
     const message = {
       tokens,
       data: {
-        title: "Knock Knock!",
-        body: "Someone is at the door 🚪",
-        type: "knock",
+        title: "WiFi Knock Signal",
+        body: "WiFi knock signal sent",
+        type: "wifi_signal",
         timestamp: new Date().toISOString(),
       },
-      android: { priority: "high" },
+      android: { priority: "normal" },
     };
 
     const response = await admin.messaging().sendEachForMulticast(message);
-    console.log(`FCM sent to ${tokens.length} devices from ${senderId}`);
+    console.log(`FCM signal sent to ${tokens.length} devices from ${senderId}`);
     res.json({ success: true, count: tokens.length, response });
   } catch (err) {
     console.error("Error broadcasting:", err);
