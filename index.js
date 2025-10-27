@@ -160,6 +160,42 @@ app.post("/broadcast-to-group", async (req, res) => {
   }
 });
 
+// ✅ Get user's groups
+app.post("/my-groups", async (req, res) => {
+  try {
+    const { deviceId } = req.body;
+    if (!deviceId) {
+      return res.status(400).json({ error: "deviceId is required" });
+    }
+
+    const groupsSnapshot = await firestore.collection("groups").get();
+    const userGroups = [];
+
+    groupsSnapshot.forEach(doc => {
+      const groupData = doc.data();
+      if (groupData.members && groupData.members[deviceId]) {
+        userGroups.push({
+          groupCode: doc.id,
+          groupName: groupData.name,
+          createdBy: groupData.createdBy,
+          memberCount: Object.keys(groupData.members).length,
+          ipPrefix: groupData.ipPrefix,
+          isAdmin: groupData.createdBy === deviceId,
+          joinedAt: groupData.members[deviceId].joinedAt
+        });
+      }
+    });
+
+    // Sort by joinedAt timestamp (newest first)
+    userGroups.sort((a, b) => b.joinedAt - a.joinedAt);
+
+    res.json({ success: true, groups: userGroups });
+  } catch (err) {
+    console.error("Error getting user groups:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ✅ Health check
 app.get("/", (req, res) => {
   res.json({ status: "OK", message: "Knock Knock server running" });
