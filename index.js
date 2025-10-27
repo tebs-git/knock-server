@@ -160,7 +160,7 @@ app.post("/broadcast-to-group", async (req, res) => {
   }
 });
 
-// ✅ Get user's groups
+// ✅ Get user's groups - FIXED VERSION
 app.post("/my-groups", async (req, res) => {
   try {
     const { deviceId } = req.body;
@@ -168,12 +168,17 @@ app.post("/my-groups", async (req, res) => {
       return res.status(400).json({ error: "deviceId is required" });
     }
 
+    console.log(`Looking for groups for device: ${deviceId}`);
+    
     const groupsSnapshot = await firestore.collection("groups").get();
     const userGroups = [];
 
     groupsSnapshot.forEach(doc => {
       const groupData = doc.data();
+      console.log(`Checking group ${doc.id}:`, groupData.members);
+      
       if (groupData.members && groupData.members[deviceId]) {
+        console.log(`Found device ${deviceId} in group ${doc.id}`);
         userGroups.push({
           groupCode: doc.id,
           groupName: groupData.name,
@@ -189,6 +194,7 @@ app.post("/my-groups", async (req, res) => {
     // Sort by joinedAt timestamp (newest first)
     userGroups.sort((a, b) => b.joinedAt - a.joinedAt);
 
+    console.log(`Found ${userGroups.length} groups for device ${deviceId}`);
     res.json({ success: true, groups: userGroups });
   } catch (err) {
     console.error("Error getting user groups:", err);
