@@ -15,21 +15,21 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Register device
+// ✅ Register device (optional - can be called from app)
 app.post("/register", async (req, res) => {
   try {
-    const { deviceId, token, name } = req.body;
-    if (!deviceId || !token) {
-      return res.status(400).json({ error: "deviceId and token are required" });
+    const { token, name } = req.body;
+    if (!token) {
+      return res.status(400).json({ error: "token is required" });
     }
 
-    await firestore.collection("devices").doc(deviceId).set({
-      token,
+    await firestore.collection("devices").doc(token).set({
+      token: token,
       name: name || "Unknown Device",
       lastActive: new Date().toISOString(),
     });
 
-    console.log(`Registered device: ${deviceId}`);
+    console.log(`Registered device with token: ${token.substring(0, 10)}...`);
     res.json({ success: true });
   } catch (err) {
     console.error("Error registering device:", err);
@@ -40,9 +40,9 @@ app.post("/register", async (req, res) => {
 // ✅ Create WiFi group
 app.post("/create-group", async (req, res) => {
   try {
-    const { deviceId, groupName, ipPrefix } = req.body;
-    if (!deviceId || !groupName) {
-      return res.status(400).json({ error: "deviceId and groupName are required" });
+    const { token, groupName, ipPrefix } = req.body;
+    if (!token || !groupName) {
+      return res.status(400).json({ error: "token and groupName are required" });
     }
 
     const groupCode = Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -50,11 +50,11 @@ app.post("/create-group", async (req, res) => {
     const groupData = {
       name: groupName,
       code: groupCode,
-      createdBy: deviceId,
+      createdBy: token,
       createdAt: Date.now(),
       ipPrefix: ipPrefix || null,
       members: {
-        [deviceId]: {
+        [token]: {
           joinedAt: Date.now(),
           ipPrefix: ipPrefix || null
         }
@@ -63,7 +63,7 @@ app.post("/create-group", async (req, res) => {
 
     await firestore.collection("groups").doc(groupCode).set(groupData);
 
-    console.log(`Group created: ${groupName} (${groupCode})`);
+    console.log(`Group created: ${groupName} (${groupCode}) by ${token.substring(0, 10)}...`);
     res.json({ success: true, groupCode, groupName });
   } catch (err) {
     console.error("Error creating group:", err);
@@ -74,9 +74,9 @@ app.post("/create-group", async (req, res) => {
 // ✅ Join group
 app.post("/join-group", async (req, res) => {
   try {
-    const { deviceId, groupCode, ipPrefix } = req.body;
-    if (!deviceId || !groupCode) {
-      return res.status(400).json({ error: "deviceId and groupCode are required" });
+    const { token, groupCode, ipPrefix } = req.body;
+    if (!token || !groupCode) {
+      return res.status(400).json({ error: "token and groupCode are required" });
     }
 
     const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
@@ -87,13 +87,14 @@ app.post("/join-group", async (req, res) => {
     }
 
     await groupRef.update({
-      [`members.${deviceId}`]: {
+      [`members.${token}`]: {
         joinedAt: Date.now(),
         ipPrefix: ipPrefix || null
       }
     });
 
     const groupData = groupDoc.data();
+    console.log(`Token ${token.substring(0, 10)}... joined group ${groupCode}`);
     res.json({ success: true, groupName: groupData.name, groupCode });
   } catch (err) {
     console.error("Error joining group:", err);
@@ -104,9 +105,9 @@ app.post("/join-group", async (req, res) => {
 // ✅ Send knock to group
 app.post("/broadcast-to-group", async (req, res) => {
   try {
-    const { senderId, groupCode, senderIpPrefix } = req.body;
-    if (!senderId || !groupCode) {
-      return res.status(400).json({ error: "senderId and groupCode are required" });
+    const { token, groupCode, senderIpPrefix } = req.body;
+    if (!token || !groupCode) {
+      return res.status(400).json({ error: "token and groupCode are required" });
     }
 
     const groupDoc = await firestore.collection("groups").doc(groupCode.toUpperCase()).get();
@@ -117,7 +118,7 @@ app.post("/broadcast-to-group", async (req, res) => {
     const groupData = groupDoc.data();
     
     // Check if sender is member
-    if (!groupData.members || !groupData.members[senderId]) {
+    if (!groupData.members || !groupData.members[token]) {
       return res.status(403).json({ error: "Not a group member" });
     }
 
@@ -128,9 +129,10 @@ app.post("/broadcast-to-group", async (req, res) => {
 
     // Get member tokens (excluding sender)
     const tokens = [];
-    for (const [memberId, memberInfo] of Object.entries(groupData.members)) {
-      if (memberId !== senderId) {
-        const deviceDoc = await firestore.collection("devices").doc(memberId).get();
+    for (const [memberToken, memberInfo] of Object.entries(groupData.members)) {
+      if (memberToken !== token) {
+        // Verify token exists in devices collection
+        const deviceDoc = await firestore.collection("devices").doc(memberToken).get();
         if (deviceDoc.exists && deviceDoc.data().token) {
           tokens.push(deviceDoc.data().token);
         }
@@ -153,6 +155,7 @@ app.post("/broadcast-to-group", async (req, res) => {
     };
 
     await admin.messaging().sendEachForMulticast(message);
+    console.log(`Knock sent from ${token.substring(0, 10)}... to ${tokens.length} members`);
     res.json({ success: true, count: tokens.length });
   } catch (err) {
     console.error("Error sending knock:", err);
@@ -160,33 +163,31 @@ app.post("/broadcast-to-group", async (req, res) => {
   }
 });
 
-// ✅ Get user's groups - FIXED VERSION
+// ✅ Get user's groups
 app.post("/my-groups", async (req, res) => {
   try {
-    const { deviceId } = req.body;
-    if (!deviceId) {
-      return res.status(400).json({ error: "deviceId is required" });
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ error: "token is required" });
     }
 
-    console.log(`Looking for groups for device: ${deviceId}`);
+    console.log(`Looking for groups for token: ${token.substring(0, 10)}...`);
     
     const groupsSnapshot = await firestore.collection("groups").get();
     const userGroups = [];
 
     groupsSnapshot.forEach(doc => {
       const groupData = doc.data();
-      console.log(`Checking group ${doc.id}:`, groupData.members);
-      
-      if (groupData.members && groupData.members[deviceId]) {
-        console.log(`Found device ${deviceId} in group ${doc.id}`);
+      if (groupData.members && groupData.members[token]) {
+        console.log(`Found token in group ${doc.id}`);
         userGroups.push({
           groupCode: doc.id,
           groupName: groupData.name,
           createdBy: groupData.createdBy,
           memberCount: Object.keys(groupData.members).length,
           ipPrefix: groupData.ipPrefix,
-          isAdmin: groupData.createdBy === deviceId,
-          joinedAt: groupData.members[deviceId].joinedAt
+          isAdmin: groupData.createdBy === token,
+          joinedAt: groupData.members[token].joinedAt
         });
       }
     });
@@ -194,7 +195,7 @@ app.post("/my-groups", async (req, res) => {
     // Sort by joinedAt timestamp (newest first)
     userGroups.sort((a, b) => b.joinedAt - a.joinedAt);
 
-    console.log(`Found ${userGroups.length} groups for device ${deviceId}`);
+    console.log(`Found ${userGroups.length} groups for token`);
     res.json({ success: true, groups: userGroups });
   } catch (err) {
     console.error("Error getting user groups:", err);
