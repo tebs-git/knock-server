@@ -15,6 +15,25 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ✅ Health check that also wakes up the server
+app.get("/health", async (req, res) => {
+  try {
+    // This request wakes up the server if it was sleeping
+    const timestamp = new Date().toISOString();
+    console.log(`Health check - Server awakened at: ${timestamp}`);
+    
+    res.json({ 
+      status: "OK", 
+      message: "Knock Knock server running",
+      timestamp: timestamp,
+      wokeUp: true
+    });
+  } catch (err) {
+    console.error("Health check error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ✅ Register device
 app.post("/register", async (req, res) => {
   try {
@@ -194,10 +213,17 @@ app.post("/my-groups", async (req, res) => {
   }
 });
 
-// ✅ Health check
+// ✅ Root endpoint
 app.get("/", (req, res) => {
-  res.json({ status: "OK", message: "Knock Knock server running" });
+  res.json({ 
+    status: "OK", 
+    message: "Knock Knock server running",
+    timestamp: new Date().toISOString()
+  });
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚪 Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚪 Knock Knock server running on port ${PORT}`);
+  console.log(`📍 Health check: http://localhost:${PORT}/health`);
+});
