@@ -15,7 +15,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Register device (optional - can be called from app)
+// ✅ Register device
 app.post("/register", async (req, res) => {
   try {
     const { token, name } = req.body;
@@ -37,10 +37,10 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// ✅ Create WiFi group
+// ✅ Create group (no IP prefix)
 app.post("/create-group", async (req, res) => {
   try {
-    const { token, groupName, ipPrefix } = req.body;
+    const { token, groupName } = req.body;
     if (!token || !groupName) {
       return res.status(400).json({ error: "token and groupName are required" });
     }
@@ -52,11 +52,9 @@ app.post("/create-group", async (req, res) => {
       code: groupCode,
       createdBy: token,
       createdAt: Date.now(),
-      ipPrefix: ipPrefix || null,
       members: {
         [token]: {
-          joinedAt: Date.now(),
-          ipPrefix: ipPrefix || null
+          joinedAt: Date.now()
         }
       }
     };
@@ -71,10 +69,10 @@ app.post("/create-group", async (req, res) => {
   }
 });
 
-// ✅ Join group
+// ✅ Join group (no IP prefix)
 app.post("/join-group", async (req, res) => {
   try {
-    const { token, groupCode, ipPrefix } = req.body;
+    const { token, groupCode } = req.body;
     if (!token || !groupCode) {
       return res.status(400).json({ error: "token and groupCode are required" });
     }
@@ -88,8 +86,7 @@ app.post("/join-group", async (req, res) => {
 
     await groupRef.update({
       [`members.${token}`]: {
-        joinedAt: Date.now(),
-        ipPrefix: ipPrefix || null
+        joinedAt: Date.now()
       }
     });
 
@@ -102,10 +99,10 @@ app.post("/join-group", async (req, res) => {
   }
 });
 
-// ✅ Send knock to group
+// ✅ Send knock to group (no IP validation)
 app.post("/broadcast-to-group", async (req, res) => {
   try {
-    const { token, groupCode, senderIpPrefix } = req.body;
+    const { token, groupCode } = req.body;
     if (!token || !groupCode) {
       return res.status(400).json({ error: "token and groupCode are required" });
     }
@@ -122,16 +119,10 @@ app.post("/broadcast-to-group", async (req, res) => {
       return res.status(403).json({ error: "Not a group member" });
     }
 
-    // Check WiFi network
-    if (groupData.ipPrefix && senderIpPrefix && groupData.ipPrefix !== senderIpPrefix) {
-      return res.status(403).json({ error: "Must be on same WiFi network" });
-    }
-
     // Get member tokens (excluding sender)
     const tokens = [];
     for (const [memberToken, memberInfo] of Object.entries(groupData.members)) {
       if (memberToken !== token) {
-        // Verify token exists in devices collection
         const deviceDoc = await firestore.collection("devices").doc(memberToken).get();
         if (deviceDoc.exists && deviceDoc.data().token) {
           tokens.push(deviceDoc.data().token);
@@ -143,22 +134,23 @@ app.post("/broadcast-to-group", async (req, res) => {
       return res.status(404).json({ error: "No other group members" });
     }
 
-    // Send notifications
+    // Send FCM wake-up notifications
     const message = {
       tokens,
       data: {
-        title: "Knock Knock!",
-        body: "Someone is at the door 🚪",
-        type: "knock"
+        title: "Wake Up!",
+        body: "Listening for knock...",
+        type: "wakeup",
+        timestamp: new Date().toISOString(),
       },
       android: { priority: "high" },
     };
 
     await admin.messaging().sendEachForMulticast(message);
-    console.log(`Knock sent from ${token.substring(0, 10)}... to ${tokens.length} members`);
+    console.log(`Wake-up sent from ${token.substring(0, 10)}... to ${tokens.length} members`);
     res.json({ success: true, count: tokens.length });
   } catch (err) {
-    console.error("Error sending knock:", err);
+    console.error("Error sending wake-up:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -185,7 +177,6 @@ app.post("/my-groups", async (req, res) => {
           groupName: groupData.name,
           createdBy: groupData.createdBy,
           memberCount: Object.keys(groupData.members).length,
-          ipPrefix: groupData.ipPrefix,
           isAdmin: groupData.createdBy === token,
           joinedAt: groupData.members[token].joinedAt
         });
