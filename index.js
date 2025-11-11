@@ -32,7 +32,7 @@ app.get("/health", async (req, res) => {
   }
 });
 
-// Register device
+// Register device - REVERTED TO ORIGINAL WORKING VERSION
 app.post("/register", async (req, res) => {
   try {
     const { token, name } = req.body;
@@ -44,7 +44,6 @@ app.post("/register", async (req, res) => {
       token: token,
       name: name || "Unknown Device",
       lastActive: new Date().toISOString(),
-      myGroups: {}
     });
 
     console.log(`Registered device: ${token.substring(0, 10)}...`);
@@ -55,7 +54,7 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// Create group
+// Create group - KEEPING EFFICIENCY IMPROVEMENTS
 app.post("/create-group", async (req, res) => {
   try {
     const { token, groupName } = req.body;
@@ -80,6 +79,7 @@ app.post("/create-group", async (req, res) => {
 
     await firestore.collection("groups").doc(groupCode).set(groupData);
 
+    // Add group to user's document for efficient lookup
     await firestore.collection("devices").doc(token).update({
       [`myGroups.${groupCode}`]: {
         groupName: groupName,
@@ -96,7 +96,7 @@ app.post("/create-group", async (req, res) => {
   }
 });
 
-// Join group
+// Join group - KEEPING EFFICIENCY IMPROVEMENTS
 app.post("/join-group", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
@@ -137,7 +137,7 @@ app.post("/join-group", async (req, res) => {
   }
 });
 
-// Get user's groups (Efficient version)
+// Get user's groups - EFFICIENT VERSION
 app.post("/my-groups", async (req, res) => {
   try {
     const { token } = req.body;
