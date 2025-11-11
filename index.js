@@ -19,20 +19,17 @@ app.use(express.json());
 app.get("/health", async (req, res) => {
   try {
     const timestamp = new Date().toISOString();
-    console.log(`Health check - Server awakened at: ${timestamp}`);
-    
     res.json({ 
       status: "OK", 
       message: "Knock Knock server running",
       timestamp: timestamp
     });
   } catch (err) {
-    console.error("Health check error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Register device - REVERTED TO ORIGINAL WORKING VERSION
+// Register device
 app.post("/register", async (req, res) => {
   try {
     const { token, name } = req.body;
@@ -46,15 +43,13 @@ app.post("/register", async (req, res) => {
       lastActive: new Date().toISOString(),
     });
 
-    console.log(`Registered device: ${token.substring(0, 10)}...`);
     res.json({ success: true });
   } catch (err) {
-    console.error("Error registering device:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Create group - KEEPING EFFICIENCY IMPROVEMENTS
+// Create group - FIXED: Handle users without myGroups field
 app.post("/create-group", async (req, res) => {
   try {
     const { token, groupName } = req.body;
@@ -77,26 +72,27 @@ app.post("/create-group", async (req, res) => {
       }
     };
 
+    // Create the group first
     await firestore.collection("groups").doc(groupCode).set(groupData);
 
-    // Add group to user's document for efficient lookup
-    await firestore.collection("devices").doc(token).update({
-      [`myGroups.${groupCode}`]: {
-        groupName: groupName,
-        joinedAt: Date.now(),
-        role: "admin"
+    // Then update user with myGroups - use set with merge to handle both cases
+    await firestore.collection("devices").doc(token).set({
+      myGroups: {
+        [groupCode]: {
+          groupName: groupName,
+          joinedAt: Date.now(),
+          role: "admin"
+        }
       }
-    });
+    }, { merge: true }); // This is key - merge doesn't overwrite existing data
 
-    console.log(`Group created: ${groupName} (${groupCode})`);
     res.json({ success: true, groupCode, groupName });
   } catch (err) {
-    console.error("Error creating group:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Join group - KEEPING EFFICIENCY IMPROVEMENTS
+// Join group - FIXED: Handle users without myGroups field
 app.post("/join-group", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
@@ -114,6 +110,7 @@ app.post("/join-group", async (req, res) => {
 
     const groupData = groupDoc.data();
 
+    // Add user to group
     await groupRef.update({
       [`members.${token}`]: {
         joinedAt: Date.now(),
@@ -121,23 +118,24 @@ app.post("/join-group", async (req, res) => {
       }
     });
 
-    await firestore.collection("devices").doc(token).update({
-      [`myGroups.${normalizedGroupCode}`]: {
-        groupName: groupData.name,
-        joinedAt: Date.now(),
-        role: "member"
+    // Add group to user's myGroups - use set with merge
+    await firestore.collection("devices").doc(token).set({
+      myGroups: {
+        [normalizedGroupCode]: {
+          groupName: groupData.name,
+          joinedAt: Date.now(),
+          role: "member"
+        }
       }
-    });
+    }, { merge: true });
 
-    console.log(`User joined group: ${normalizedGroupCode}`);
     res.json({ success: true, groupName: groupData.name, groupCode: normalizedGroupCode });
   } catch (err) {
-    console.error("Error joining group:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get user's groups - EFFICIENT VERSION
+// Get user's groups - FIXED: Handle users without myGroups field
 app.post("/my-groups", async (req, res) => {
   try {
     const { token } = req.body;
@@ -154,6 +152,7 @@ app.post("/my-groups", async (req, res) => {
     const userData = userDoc.data();
     const userGroups = [];
 
+    // Check if user has myGroups field, if not return empty array
     if (userData.myGroups) {
       const groupCodes = Object.keys(userData.myGroups);
       
@@ -166,7 +165,6 @@ app.post("/my-groups", async (req, res) => {
           userGroups.push({
             groupCode: groupCode,
             groupName: groupData.name,
-            createdBy: groupData.createdBy,
             memberCount: groupData.members ? Object.keys(groupData.members).length : 0,
             isAdmin: userGroupInfo.role === "admin",
             joinedAt: userGroupInfo.joinedAt
@@ -177,10 +175,8 @@ app.post("/my-groups", async (req, res) => {
       userGroups.sort((a, b) => b.joinedAt - a.joinedAt);
     }
 
-    console.log(`Loaded ${userGroups.length} groups for user`);
     res.json({ success: true, groups: userGroups });
   } catch (err) {
-    console.error("Error getting user groups:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -230,10 +226,8 @@ app.post("/broadcast-to-group", async (req, res) => {
     };
 
     await admin.messaging().sendEachForMulticast(message);
-    console.log(`Wake-up sent to ${tokens.length} members`);
     res.json({ success: true, count: tokens.length });
   } catch (err) {
-    console.error("Error sending wake-up:", err);
     res.status(500).json({ error: err.message });
   }
 });
