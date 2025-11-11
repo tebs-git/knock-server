@@ -15,21 +15,26 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Health check
+// ✅ Health check that also wakes up the server
 app.get("/health", async (req, res) => {
   try {
+    // This request wakes up the server if it was sleeping
     const timestamp = new Date().toISOString();
+    console.log(`Health check - Server awakened at: ${timestamp}`);
+    
     res.json({ 
       status: "OK", 
       message: "Knock Knock server running",
-      timestamp: timestamp
+      timestamp: timestamp,
+      wokeUp: true
     });
   } catch (err) {
+    console.error("Health check error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Register device
+// ✅ Register device
 app.post("/register", async (req, res) => {
   try {
     const { token, name } = req.body;
@@ -43,13 +48,15 @@ app.post("/register", async (req, res) => {
       lastActive: new Date().toISOString(),
     });
 
+    console.log(`Registered device with token: ${token.substring(0, 10)}...`);
     res.json({ success: true });
   } catch (err) {
+    console.error("Error registering device:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Create group - FIXED: Handle users without myGroups field
+// ✅ Create group (no IP prefix)
 app.post("/create-group", async (req, res) => {
   try {
     const { token, groupName } = req.body;
@@ -66,33 +73,22 @@ app.post("/create-group", async (req, res) => {
       createdAt: Date.now(),
       members: {
         [token]: {
-          joinedAt: Date.now(),
-          role: "admin"
+          joinedAt: Date.now()
         }
       }
     };
 
-    // Create the group first
     await firestore.collection("groups").doc(groupCode).set(groupData);
 
-    // Then update user with myGroups - use set with merge to handle both cases
-    await firestore.collection("devices").doc(token).set({
-      myGroups: {
-        [groupCode]: {
-          groupName: groupName,
-          joinedAt: Date.now(),
-          role: "admin"
-        }
-      }
-    }, { merge: true }); // This is key - merge doesn't overwrite existing data
-
+    console.log(`Group created: ${groupName} (${groupCode}) by ${token.substring(0, 10)}...`);
     res.json({ success: true, groupCode, groupName });
   } catch (err) {
+    console.error("Error creating group:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Join group - FIXED: Handle users without myGroups field
+// ✅ Join group (no IP prefix)
 app.post("/join-group", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
@@ -100,88 +96,29 @@ app.post("/join-group", async (req, res) => {
       return res.status(400).json({ error: "token and groupCode are required" });
     }
 
-    const normalizedGroupCode = groupCode.toUpperCase();
-    const groupRef = firestore.collection("groups").doc(normalizedGroupCode);
+    const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
     const groupDoc = await groupRef.get();
     
     if (!groupDoc.exists) {
       return res.status(404).json({ error: "Group not found" });
     }
 
-    const groupData = groupDoc.data();
-
-    // Add user to group
     await groupRef.update({
       [`members.${token}`]: {
-        joinedAt: Date.now(),
-        role: "member"
+        joinedAt: Date.now()
       }
     });
 
-    // Add group to user's myGroups - use set with merge
-    await firestore.collection("devices").doc(token).set({
-      myGroups: {
-        [normalizedGroupCode]: {
-          groupName: groupData.name,
-          joinedAt: Date.now(),
-          role: "member"
-        }
-      }
-    }, { merge: true });
-
-    res.json({ success: true, groupName: groupData.name, groupCode: normalizedGroupCode });
+    const groupData = groupDoc.data();
+    console.log(`Token ${token.substring(0, 10)}... joined group ${groupCode}`);
+    res.json({ success: true, groupName: groupData.name, groupCode });
   } catch (err) {
+    console.error("Error joining group:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get user's groups - FIXED: Handle users without myGroups field
-app.post("/my-groups", async (req, res) => {
-  try {
-    const { token } = req.body;
-    if (!token) {
-      return res.status(400).json({ error: "token is required" });
-    }
-
-    const userDoc = await firestore.collection("devices").doc(token).get();
-    
-    if (!userDoc.exists) {
-      return res.json({ success: true, groups: [] });
-    }
-
-    const userData = userDoc.data();
-    const userGroups = [];
-
-    // Check if user has myGroups field, if not return empty array
-    if (userData.myGroups) {
-      const groupCodes = Object.keys(userData.myGroups);
-      
-      for (const groupCode of groupCodes) {
-        const groupDoc = await firestore.collection("groups").doc(groupCode).get();
-        if (groupDoc.exists) {
-          const groupData = groupDoc.data();
-          const userGroupInfo = userData.myGroups[groupCode];
-          
-          userGroups.push({
-            groupCode: groupCode,
-            groupName: groupData.name,
-            memberCount: groupData.members ? Object.keys(groupData.members).length : 0,
-            isAdmin: userGroupInfo.role === "admin",
-            joinedAt: userGroupInfo.joinedAt
-          });
-        }
-      }
-
-      userGroups.sort((a, b) => b.joinedAt - a.joinedAt);
-    }
-
-    res.json({ success: true, groups: userGroups });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Send knock to group
+// ✅ Send knock to group (no IP validation)
 app.post("/broadcast-to-group", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
@@ -196,10 +133,12 @@ app.post("/broadcast-to-group", async (req, res) => {
 
     const groupData = groupDoc.data();
     
+    // Check if sender is member
     if (!groupData.members || !groupData.members[token]) {
       return res.status(403).json({ error: "Not a group member" });
     }
 
+    // Get member tokens (excluding sender)
     const tokens = [];
     for (const [memberToken, memberInfo] of Object.entries(groupData.members)) {
       if (memberToken !== token) {
@@ -214,6 +153,7 @@ app.post("/broadcast-to-group", async (req, res) => {
       return res.status(404).json({ error: "No other group members" });
     }
 
+    // Send FCM wake-up notifications
     const message = {
       tokens,
       data: {
@@ -226,13 +166,54 @@ app.post("/broadcast-to-group", async (req, res) => {
     };
 
     await admin.messaging().sendEachForMulticast(message);
+    console.log(`Wake-up sent from ${token.substring(0, 10)}... to ${tokens.length} members`);
     res.json({ success: true, count: tokens.length });
   } catch (err) {
+    console.error("Error sending wake-up:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Root endpoint
+// ✅ Get user's groups
+app.post("/my-groups", async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ error: "token is required" });
+    }
+
+    console.log(`Looking for groups for token: ${token.substring(0, 10)}...`);
+    
+    const groupsSnapshot = await firestore.collection("groups").get();
+    const userGroups = [];
+
+    groupsSnapshot.forEach(doc => {
+      const groupData = doc.data();
+      if (groupData.members && groupData.members[token]) {
+        console.log(`Found token in group ${doc.id}`);
+        userGroups.push({
+          groupCode: doc.id,
+          groupName: groupData.name,
+          createdBy: groupData.createdBy,
+          memberCount: Object.keys(groupData.members).length,
+          isAdmin: groupData.createdBy === token,
+          joinedAt: groupData.members[token].joinedAt
+        });
+      }
+    });
+
+    // Sort by joinedAt timestamp (newest first)
+    userGroups.sort((a, b) => b.joinedAt - a.joinedAt);
+
+    console.log(`Found ${userGroups.length} groups for token`);
+    res.json({ success: true, groups: userGroups });
+  } catch (err) {
+    console.error("Error getting user groups:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ Root endpoint
 app.get("/", (req, res) => {
   res.json({ 
     status: "OK", 
@@ -244,4 +225,5 @@ app.get("/", (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚪 Knock Knock server running on port ${PORT}`);
+  console.log(`📍 Health check: http://localhost:${PORT}/health`);
 });
