@@ -56,10 +56,10 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// ✅ Create group (no IP prefix)
+// ✅ Create group with SSID registration
 app.post("/create-group", async (req, res) => {
   try {
-    const { token, groupName } = req.body;
+    const { token, groupName, currentSsid } = req.body;
     if (!token || !groupName) {
       return res.status(400).json({ error: "token and groupName are required" });
     }
@@ -69,29 +69,32 @@ app.post("/create-group", async (req, res) => {
     const groupData = {
       name: groupName,
       code: groupCode,
+      registeredSSID: currentSsid || null,
       createdBy: token,
       createdAt: Date.now(),
       members: {
         [token]: {
-          joinedAt: Date.now()
+          joinedAt: Date.now(),
+          currentWifiStatus: currentSsid || "unknown",
+          lastUpdated: new Date().toISOString()
         }
       }
     };
 
     await firestore.collection("groups").doc(groupCode).set(groupData);
 
-    console.log(`Group created: ${groupName} (${groupCode}) by ${token.substring(0, 10)}...`);
-    res.json({ success: true, groupCode, groupName });
+    console.log(`Group created: ${groupName} (${groupCode}) with SSID: ${currentSsid}`);
+    res.json({ success: true, groupCode, groupName, registeredSSID: currentSsid });
   } catch (err) {
     console.error("Error creating group:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ Join group (no IP prefix)
+// ✅ Join group with SSID
 app.post("/join-group", async (req, res) => {
   try {
-    const { token, groupCode } = req.body;
+    const { token, groupCode, currentSsid } = req.body;
     if (!token || !groupCode) {
       return res.status(400).json({ error: "token and groupCode are required" });
     }
@@ -105,28 +108,61 @@ app.post("/join-group", async (req, res) => {
 
     await groupRef.update({
       [`members.${token}`]: {
-        joinedAt: Date.now()
+        joinedAt: Date.now(),
+        currentWifiStatus: currentSsid || "unknown",
+        lastUpdated: new Date().toISOString()
       }
     });
 
     const groupData = groupDoc.data();
-    console.log(`Token ${token.substring(0, 10)}... joined group ${groupCode}`);
-    res.json({ success: true, groupName: groupData.name, groupCode });
+    console.log(`Token ${token.substring(0, 10)}... joined group ${groupCode} with SSID: ${currentSsid}`);
+    res.json({ success: true, groupName: groupData.name, groupCode, registeredSSID: groupData.registeredSSID });
   } catch (err) {
     console.error("Error joining group:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ Send knock to group (no IP validation)
-app.post("/broadcast-to-group", async (req, res) => {
+// ✅ Update device WiFi status
+app.post("/update-wifi-status", async (req, res) => {
   try {
-    const { token, groupCode } = req.body;
+    const { token, groupCode, wifiStatus } = req.body;
     if (!token || !groupCode) {
       return res.status(400).json({ error: "token and groupCode are required" });
     }
 
-    const groupDoc = await firestore.collection("groups").doc(groupCode.toUpperCase()).get();
+    const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
+    const groupDoc = await groupRef.get();
+    
+    if (!groupDoc.exists) {
+      return res.status(404).json({ error: "Group not found" });
+    }
+
+    // Update member's WiFi status
+    await groupRef.update({
+      [`members.${token}.currentWifiStatus`]: wifiStatus,
+      [`members.${token}.lastUpdated`]: new Date().toISOString()
+    });
+
+    console.log(`Updated WiFi status for ${token.substring(0, 10)}...: ${wifiStatus}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Error updating WiFi status:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ Send knock only if someone is home
+app.post("/home-knock", async (req, res) => {
+  try {
+    const { token, groupCode, currentSsid } = req.body;
+    if (!token || !groupCode) {
+      return res.status(400).json({ error: "token and groupCode are required" });
+    }
+
+    const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
+    const groupDoc = await groupRef.get();
+    
     if (!groupDoc.exists) {
       return res.status(404).json({ error: "Group not found" });
     }
@@ -138,38 +174,57 @@ app.post("/broadcast-to-group", async (req, res) => {
       return res.status(403).json({ error: "Not a group member" });
     }
 
-    // Get member tokens (excluding sender)
+    // Check if group has registered SSID (set when group was created)
+    if (!groupData.registeredSSID) {
+      return res.status(400).json({ error: "Group has no registered home network" });
+    }
+
+    // Check if ANY group member is currently on the home network
+    let someoneHome = false;
     const tokens = [];
+    
     for (const [memberToken, memberInfo] of Object.entries(groupData.members)) {
-      if (memberToken !== token) {
-        const deviceDoc = await firestore.collection("devices").doc(memberToken).get();
-        if (deviceDoc.exists && deviceDoc.data().token) {
-          tokens.push(deviceDoc.data().token);
+      if (memberToken !== token) { // Exclude sender
+        const currentWifiStatus = memberInfo.currentWifiStatus;
+        
+        // Check if member is connected to the registered home SSID
+        if (currentWifiStatus === groupData.registeredSSID) {
+          someoneHome = true;
+          
+          // Get device token for FCM
+          const deviceDoc = await firestore.collection("devices").doc(memberToken).get();
+          if (deviceDoc.exists && deviceDoc.data().token) {
+            tokens.push(deviceDoc.data().token);
+          }
         }
       }
     }
 
-    if (tokens.length === 0) {
-      return res.status(404).json({ error: "No other group members" });
+    if (!someoneHome) {
+      return res.status(400).json({ error: "No one home" });
     }
 
-    // Send FCM wake-up notifications
+    if (tokens.length === 0) {
+      return res.status(404).json({ error: "No valid device tokens found" });
+    }
+
+    // Send FCM notifications
     const message = {
       tokens,
       data: {
-        title: "Wake Up!",
-        body: "Listening for knock...",
-        type: "wakeup",
+        title: "🔔 Knock Knock!",
+        body: "Someone is at the door!",
+        type: "knock",
         timestamp: new Date().toISOString(),
       },
       android: { priority: "high" },
     };
 
     await admin.messaging().sendEachForMulticast(message);
-    console.log(`Wake-up sent from ${token.substring(0, 10)}... to ${tokens.length} members`);
-    res.json({ success: true, count: tokens.length });
+    console.log(`Home knock sent from ${token.substring(0, 10)}... to ${tokens.length} home devices`);
+    res.json({ success: true, count: tokens.length, message: "Knock delivered to home devices" });
   } catch (err) {
-    console.error("Error sending wake-up:", err);
+    console.error("Error sending home knock:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -194,10 +249,12 @@ app.post("/my-groups", async (req, res) => {
         userGroups.push({
           groupCode: doc.id,
           groupName: groupData.name,
+          registeredSSID: groupData.registeredSSID,
           createdBy: groupData.createdBy,
           memberCount: Object.keys(groupData.members).length,
           isAdmin: groupData.createdBy === token,
-          joinedAt: groupData.members[token].joinedAt
+          joinedAt: groupData.members[token].joinedAt,
+          currentWifiStatus: groupData.members[token].currentWifiStatus
         });
       }
     });
