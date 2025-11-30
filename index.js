@@ -15,11 +15,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Health check
-app.get("/health", (req, res) => {
-  res.json({ status: "OK", timestamp: new Date().toISOString() });
-});
-
 // ✅ Get complete public IP address
 function getCompletePublicIp(req) {
   // Try different headers that might contain the real public IP
@@ -51,6 +46,11 @@ function getCompletePublicIp(req) {
   return completeIp;
 }
 
+// ✅ Health check
+app.get("/health", (req, res) => {
+  res.json({ status: "OK", timestamp: new Date().toISOString() });
+});
+
 // ✅ Register device and report status
 app.post("/register", async (req, res) => {
   try {
@@ -62,7 +62,7 @@ app.post("/register", async (req, res) => {
     // Store in device_status collection
     await firestore.collection("device_status").doc(userId).set({
       fcm_token: token,
-      public_ip: publicIp,  // ← COMPLETE IP
+      public_ip: publicIp,
       last_seen: new Date().toISOString(),
     });
 
@@ -84,7 +84,7 @@ app.post("/report-status", async (req, res) => {
     
     await firestore.collection("device_status").doc(userId).set({
       fcm_token: token,
-      public_ip: publicIp,  // ← COMPLETE IP
+      public_ip: publicIp,
       last_seen: new Date().toISOString(),
     }, { merge: true });
 
@@ -92,6 +92,54 @@ app.post("/report-status", async (req, res) => {
     res.json({ success: true, public_ip: publicIp });
   } catch (err) {
     console.error("Status update error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ Create group
+app.post("/create-group", async (req, res) => {
+  try {
+    const { groupName, userId } = req.body;
+    if (!groupName || !userId) return res.status(400).json({ error: "groupName and userId required" });
+
+    const groupCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    
+    await firestore.collection("groups").doc(groupCode).set({
+      name: groupName,
+      code: groupCode,
+      createdBy: userId,
+      createdAt: Date.now(),
+      members: { [userId]: { joinedAt: Date.now() } }
+    });
+
+    console.log(`Group created: ${groupName} (${groupCode}) by ${userId}`);
+    res.json({ success: true, groupCode, groupName });
+  } catch (err) {
+    console.error("Create group error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ Join group
+app.post("/join-group", async (req, res) => {
+  try {
+    const { groupCode, userId } = req.body;
+    if (!groupCode || !userId) return res.status(400).json({ error: "groupCode and userId required" });
+
+    const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
+    const groupDoc = await groupRef.get();
+    
+    if (!groupDoc.exists) return res.status(404).json({ error: "Group not found" });
+
+    await groupRef.update({
+      [`members.${userId}`]: { joinedAt: Date.now() }
+    });
+
+    const groupData = groupDoc.data();
+    console.log(`User ${userId} joined group ${groupCode}`);
+    res.json({ success: true, groupName: groupData.name, groupCode });
+  } catch (err) {
+    console.error("Join group error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -137,7 +185,67 @@ app.post("/send-knock", async (req, res) => {
   }
 });
 
-// ... keep the rest of your endpoints (create-group, join-group, etc.) the same
+// ✅ Get user's groups
+app.post("/my-groups", async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: "userId required" });
+
+    const groupsSnapshot = await firestore.collection("groups").get();
+    const userGroups = [];
+
+    groupsSnapshot.forEach(doc => {
+      const groupData = doc.data();
+      if (groupData.members && groupData.members[userId]) {
+        userGroups.push({
+          groupCode: doc.id,
+          groupName: groupData.name,
+          memberCount: Object.keys(groupData.members).length,
+        });
+      }
+    });
+
+    userGroups.sort((a, b) => b.joinedAt - a.joinedAt);
+    res.json({ success: true, groups: userGroups });
+  } catch (err) {
+    console.error("Get groups error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ Get group members
+app.post("/group-members", async (req, res) => {
+  try {
+    const { groupCode, currentUserId } = req.body;
+    if (!groupCode) return res.status(400).json({ error: "groupCode required" });
+
+    const groupDoc = await firestore.collection("groups").doc(groupCode.toUpperCase()).get();
+    if (!groupDoc.exists) return res.status(404).json({ error: "Group not found" });
+
+    const groupData = groupDoc.data();
+    const members = [];
+
+    for (const [memberUserId] of Object.entries(groupData.members || {})) {
+      if (memberUserId !== currentUserId) {
+        members.push({ userId: memberUserId });
+      }
+    }
+
+    res.json({ success: true, members });
+  } catch (err) {
+    console.error("Get members error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ Root endpoint
+app.get("/", (req, res) => {
+  res.json({ 
+    status: "OK", 
+    message: "Knock Knock server running",
+    timestamp: new Date().toISOString()
+  });
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
