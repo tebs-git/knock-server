@@ -213,7 +213,7 @@ app.post("/my-groups", async (req, res) => {
   }
 });
 
-// ✅ Get group members
+// ✅ Get group members (FIXED VERSION)
 app.post("/group-members", async (req, res) => {
   try {
     const { groupCode, currentUserId } = req.body;
@@ -225,13 +225,19 @@ app.post("/group-members", async (req, res) => {
     const groupData = groupDoc.data();
     const members = [];
 
-    for (const [memberUserId] of Object.entries(groupData.members || {})) {
-      if (memberUserId !== currentUserId) {
-        members.push({ userId: memberUserId });
+    if (groupData.members) {
+      for (const [memberUserId, memberInfo] of Object.entries(groupData.members)) {
+        if (memberUserId !== currentUserId) {
+          members.push({ 
+            userId: memberUserId,
+            joinedAt: memberInfo.joinedAt || Date.now()
+          });
+        }
       }
     }
 
-    res.json({ success: true, members });
+    console.log(`Found ${members.length} members in group ${groupCode} (excluding ${currentUserId})`);
+    res.json({ success: true, members: members });
   } catch (err) {
     console.error("Get members error:", err);
     res.status(500).json({ error: err.message });
@@ -251,3 +257,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚪 Knock Knock server running on port ${PORT}`);
 });
+
