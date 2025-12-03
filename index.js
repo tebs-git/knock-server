@@ -29,23 +29,7 @@ function getCompletePublicIp(req) {
   }
   
   completeIp = completeIp.replace(/^::ffff:/, '');
-  console.log("Client IP detected:", completeIp);
   return completeIp;
-}
-
-// ✅ Register device helper
-async function registerDevice(token) {
-  try {
-    await firestore.collection("devices").doc(token).set({
-      token: token,
-      lastActive: new Date().toISOString(),
-    }, { merge: true });
-    console.log(`✅ Device registered: ${token.substring(0, 10)}...`);
-    return true;
-  } catch (err) {
-    console.error("❌ Device registration error:", err);
-    return false;
-  }
 }
 
 // ✅ Health check
@@ -62,9 +46,6 @@ app.post("/create-group", async (req, res) => {
     const groupCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     const publicIp = getCompletePublicIp(req);
     
-    // Register device first
-    await registerDevice(token);
-    
     await firestore.collection("groups").doc(groupCode).set({
       name: groupName,
       code: groupCode,
@@ -77,10 +58,10 @@ app.post("/create-group", async (req, res) => {
       }
     });
 
-    console.log(`✅ Group created: ${groupName} (${groupCode}) - Creator IP: ${publicIp}`);
+    console.log(`Group created: ${groupName} (${groupCode}) - Creator IP: ${publicIp}`);
     res.json({ success: true, groupCode, groupName });
   } catch (err) {
-    console.error("❌ Create group error:", err);
+    console.error("Create group error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -97,9 +78,6 @@ app.post("/join-group", async (req, res) => {
     
     if (!groupDoc.exists) return res.status(404).json({ error: "Group not found" });
 
-    // Register device first
-    await registerDevice(token);
-
     await groupRef.update({
       [`members.${token}`]: {
         publicIp: publicIp,
@@ -108,47 +86,22 @@ app.post("/join-group", async (req, res) => {
     });
 
     const groupData = groupDoc.data();
-    console.log(`✅ Token ${token.substring(0, 10)}... joined group ${groupCode} (IP: ${publicIp})`);
+    console.log(`Token ${token.substring(0, 10)}... joined group ${groupCode} (IP: ${publicIp})`);
     res.json({ success: true, groupName: groupData.name, groupCode });
   } catch (err) {
-    console.error("❌ Join group error:", err);
+    console.error("Join group error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ Update member IP (call this when network changes)
-app.post("/update-ip", async (req, res) => {
-  try {
-    const { token, groupCode } = req.body;
-    if (!token || !groupCode) return res.status(400).json({ error: "token and groupCode required" });
-
-    const publicIp = getCompletePublicIp(req);
-    const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
-    const groupDoc = await groupRef.get();
-    
-    if (!groupDoc.exists) return res.status(404).json({ error: "Group not found" });
-
-    await groupRef.update({
-      [`members.${token}.publicIp`]: publicIp,
-      [`members.${token}.lastUpdated`]: new Date().toISOString()
-    });
-
-    console.log(`✅ Updated IP for ${token.substring(0, 10)}... in group ${groupCode}: ${publicIp}`);
-    res.json({ success: true, publicIp });
-  } catch (err) {
-    console.error("❌ Update IP error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ✅ Send knock (MAIN FUNCTION)
+// ✅ Send knock (SIMPLIFIED - compares IPs directly in group)
 app.post("/send-knock", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
     if (!token || !groupCode) return res.status(400).json({ error: "token and groupCode required" });
 
     const senderIp = getCompletePublicIp(req);
-    console.log(`🔔 Knock attempt from ${token.substring(0, 10)}... (IP: ${senderIp}) to group ${groupCode}`);
+    console.log(`Knock attempt: ${token.substring(0, 10)}... (IP: ${senderIp}) to group ${groupCode}`);
 
     const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
     const groupDoc = await groupRef.get();
@@ -159,58 +112,33 @@ app.post("/send-knock", async (req, res) => {
     
     // Check if sender is in the group
     if (!groupData.members || !groupData.members[token]) {
-      console.log(`❌ Sender ${token.substring(0, 10)}... not in group`);
       return res.status(403).json({ error: "Not a group member" });
     }
 
-    // Update sender's IP
+    // Update sender's IP (in case it changed)
     await groupRef.update({
       [`members.${token}.publicIp`]: senderIp,
       [`members.${token}.lastUpdated`]: new Date().toISOString()
     });
 
     // Find other members with same IP
-    const matchingMembers = [];
+    const tokensToNotify = [];
     
-    console.log("Checking group members:", Object.keys(groupData.members || {}));
-    
-    for (const [memberToken, memberData] of Object.entries(groupData.members || {})) {
-      console.log(`Member ${memberToken.substring(0, 10)}... IP: ${memberData.publicIp}`);
+    for (const [memberToken, memberData] of Object.entries(groupData.members)) {
       if (memberToken !== token && memberData.publicIp === senderIp) {
-        matchingMembers.push(memberToken);
-        console.log(`✅ Match found: ${memberToken.substring(0, 10)}... has same IP`);
+        tokensToNotify.push(memberToken);
       }
     }
 
-    console.log(`📊 IP match check: ${senderIp} found ${matchingMembers.length} matching members`);
+    console.log(`IP match check: ${senderIp} found ${tokensToNotify.length} matching members`);
 
-    if (matchingMembers.length === 0) {
-      console.log(`❌ No one home on network ${senderIp}`);
+    if (tokensToNotify.length === 0) {
       return res.status(400).json({ error: "No one home (different network)" });
     }
 
-    // Get device documents to verify tokens exist
-    const validTokens = [];
-    for (const memberToken of matchingMembers) {
-      const deviceDoc = await firestore.collection("devices").doc(memberToken).get();
-      if (deviceDoc.exists) {
-        validTokens.push(memberToken);
-        console.log(`✅ Valid device: ${memberToken.substring(0, 10)}...`);
-      } else {
-        console.log(`⚠️ Skipping ${memberToken.substring(0, 10)}... - not in devices collection`);
-      }
-    }
-
-    if (validTokens.length === 0) {
-      console.log(`❌ No valid device tokens found`);
-      return res.status(400).json({ error: "No valid device tokens found" });
-    }
-
-    console.log(`📤 Sending FCM to ${validTokens.length} valid tokens`);
-
     // Send FCM to all matching members
     const message = {
-      tokens: validTokens,
+      tokens: tokensToNotify,
       data: {
         title: "🔔 Knock Knock!",
         body: "Someone is at the door!",
@@ -218,45 +146,13 @@ app.post("/send-knock", async (req, res) => {
         timestamp: new Date().toISOString(),
       },
       android: { priority: "high" },
-      apns: {
-        payload: {
-          aps: {
-            alert: {
-              title: "🔔 Knock Knock!",
-              body: "Someone is at the door!"
-            },
-            sound: "default"
-          }
-        }
-      }
     };
 
-    console.log("FCM Message:", JSON.stringify(message, null, 2));
-    
-    const response = await admin.messaging().sendEachForMulticast(message);
-    console.log(`📨 FCM Response: Success: ${response.successCount}, Failure: ${response.failureCount}`);
-    
-    if (response.failureCount > 0) {
-      response.responses.forEach((resp, idx) => {
-        if (!resp.success) {
-          console.error(`❌ FCM failed for ${validTokens[idx].substring(0, 10)}...:`, resp.error);
-        }
-      });
-    }
-
-    if (response.successCount > 0) {
-      console.log(`✅ Knock successfully delivered to ${response.successCount} device(s)`);
-    }
-
-    res.json({ 
-      success: true, 
-      count: validTokens.length, 
-      fcmSuccess: response.successCount,
-      fcmFailure: response.failureCount,
-      message: "Knock delivered" 
-    });
+    await admin.messaging().sendEachForMulticast(message);
+    console.log(`✅ Knock delivered to ${tokensToNotify.length} member(s) on same network (${senderIp})`);
+    res.json({ success: true, count: tokensToNotify.length, message: "Knock delivered" });
   } catch (err) {
-    console.error("❌ Send knock error:", err);
+    console.error("Send knock error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -281,25 +177,15 @@ app.post("/my-groups", async (req, res) => {
       }
     });
 
-    console.log(`📋 Found ${userGroups.length} groups for token ${token.substring(0, 10)}...`);
+    console.log(`Found ${userGroups.length} groups for token ${token.substring(0, 10)}...`);
     res.json({ success: true, groups: userGroups });
   } catch (err) {
-    console.error("❌ Get groups error:", err);
+    console.error("Get groups error:", err);
     res.status(500).json({ error: err.message });
   }
-});
-
-// ✅ Root endpoint
-app.get("/", (req, res) => {
-  res.json({ 
-    status: "OK", 
-    message: "Knock Knock server running",
-    timestamp: new Date().toISOString()
-  });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚪 Knock Knock server running on port ${PORT}`);
-  console.log(`📍 Health check: http://localhost:${PORT}/health`);
 });
