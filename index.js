@@ -84,8 +84,48 @@ app.post("/join-group", async (req, res) => {
   }
 });
 
-// ✅ SIMPLE: Send knock to entire group
-app.post("/send-knock", async (req, res) => {
+// ✅ Update IP when connecting to WiFi
+app.post("/update-ip", async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: "token required" });
+
+    const publicIp = getCompletePublicIp(req);
+    
+    await firestore.collection("device_status").doc(token).set({
+      public_ip: publicIp,
+      last_updated: new Date().toISOString()
+    }, { merge: true });
+
+    console.log(`📱 ${token.substring(0, 8)}... IP updated: ${publicIp}`);
+    res.json({ success: true, public_ip: publicIp });
+  } catch (err) {
+    console.error("Update IP error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ Set IP to "n/a" when disconnecting
+app.post("/set-offline", async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: "token required" });
+
+    await firestore.collection("device_status").doc(token).set({
+      public_ip: "n/a",
+      last_updated: new Date().toISOString()
+    }, { merge: true });
+
+    console.log(`📱 ${token.substring(0, 8)}... set to offline (n/a)`);
+    res.json({ success: true, status: "offline" });
+  } catch (err) {
+    console.error("Set offline error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ SIMPLE KNOCK: Compare stored IPs, send if match
+app.post("/knock", async (req, res) => {
   try {
     const { senderToken, groupCode } = req.body;
     if (!senderToken || !groupCode) {
@@ -94,8 +134,7 @@ app.post("/send-knock", async (req, res) => {
 
     // 1. Get sender's current IP
     const senderIp = getCompletePublicIp(req);
-    
-    console.log(`👊 Knock from ${senderToken.substring(0, 8)}... to ENTIRE GROUP ${groupCode}`);
+    console.log(`👊 Knock from ${senderToken.substring(0, 8)}... (IP: ${senderIp}) to group ${groupCode}`);
     
     // 2. Get the group
     const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
@@ -115,26 +154,41 @@ app.post("/send-knock", async (req, res) => {
       return res.status(400).json({ error: "No other members in group" });
     }
 
-    console.log(`📋 Will knock ${receivers.length} member(s) in group`);
+    console.log(`📋 Checking ${receivers.length} member(s) in group`);
     
-    // 4. Store sender's IP for comparison
-    await firestore.collection("knock_temp").doc(senderToken).set({
-      ip: senderIp,
-      timestamp: new Date().toISOString()
-    });
+    // 4. For each receiver, check their stored IP
+    const tokensToKnock = [];
+    
+    for (const receiverToken of receivers) {
+      // Get receiver's stored IP from device_status collection
+      const statusDoc = await firestore.collection("device_status").doc(receiverToken).get();
+      
+      if (statusDoc.exists) {
+        const receiverData = statusDoc.data();
+        const receiverIp = receiverData.public_ip;
+        
+        console.log(`🔍 ${receiverToken.substring(0, 8)}...: stored IP = ${receiverIp}, sender IP = ${senderIp}`);
+        
+        // Compare IPs - only knock if they match AND not "n/a"
+        if (receiverIp === senderIp && receiverIp !== "n/a") {
+          tokensToKnock.push(receiverToken);
+          console.log(`✅ Match! Will knock ${receiverToken.substring(0, 8)}...`);
+        }
+      }
+    }
 
-    // 5. Send attempt notification to ALL receivers
-    const promises = receivers.map(receiverToken => {
+    if (tokensToKnock.length === 0) {
+      console.log(`❌ No one in group has matching IP (${senderIp})`);
+      return res.status(400).json({ error: "No one home" });
+    }
+
+    // 5. Send actual knock to matched members
+    const promises = tokensToKnock.map(receiverToken => {
       const message = {
         token: receiverToken,
         notification: {
-          title: "👀 Knock Attempt",
-          body: "Someone is checking if you're home..."
-        },
-        data: {
-          type: "knock_attempt",
-          senderIp: senderIp,
-          senderToken: senderToken
+          title: "🔔 Door Knock!",
+          body: "Someone is at your door!"
         },
         android: { priority: "high" }
       };
@@ -142,76 +196,21 @@ app.post("/send-knock", async (req, res) => {
     });
 
     await Promise.all(promises);
-    console.log(`📤 Attempt notifications sent to ${receivers.length} member(s)`);
+    console.log(`📤 Actual knock sent to ${tokensToKnock.length} member(s)`);
     
     res.json({ 
       success: true, 
-      message: `Knock attempt sent to ${receivers.length} group member(s)`,
-      count: receivers.length
+      message: `Knock delivered to ${tokensToKnock.length} person(s) at home`,
+      count: tokensToKnock.length
     });
 
   } catch (err) {
-    console.error("❌ Send knock error:", err);
+    console.error("❌ Knock error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ Report IP (called by receiver's phone)
-app.post("/report-ip", async (req, res) => {
-  try {
-    const { token, currentIp, senderToken } = req.body;
-    if (!token || !currentIp || !senderToken) {
-      return res.status(400).json({ error: "token, currentIp and senderToken required" });
-    }
-
-    console.log(`📱 IP Report from ${token.substring(0, 8)}...: ${currentIp}`);
-    
-    // 1. Get sender's IP from temporary storage
-    const senderDoc = await firestore.collection("knock_temp").doc(senderToken).get();
-    
-    if (!senderDoc.exists) {
-      console.log("No active knock attempt found");
-      return res.json({ success: true, ipMatch: false });
-    }
-
-    const senderData = senderDoc.data();
-    const senderIp = senderData.ip;
-    
-    console.log(`🔍 IP Comparison: Sender=${senderIp}, Receiver=${currentIp}`);
-    
-    // 2. Compare IPs immediately
-    if (senderIp === currentIp) {
-      // ✅ IPs MATCH - Send actual knock!
-      console.log(`✅ IPs MATCH! Sending actual knock to ${token.substring(0, 8)}...`);
-      
-      const knockMessage = {
-        token: token,
-        notification: {
-          title: "🔔 Door Knock!",
-          body: "Someone is at your door!"
-        },
-        data: {
-          type: "actual_knock"
-        },
-        android: { priority: "high" }
-      };
-
-      await admin.messaging().send(knockMessage);
-      console.log(`🎯 Actual knock notification sent.`);
-      
-      return res.json({ success: true, ipMatch: true, action: "knock_sent" });
-    } else {
-      // ❌ IPs DON'T MATCH - Do nothing
-      console.log(`❌ IPs DO NOT MATCH. No knock sent.`);
-      return res.json({ success: true, ipMatch: false, action: "no_action" });
-    }
-  } catch (err) {
-    console.error("Report IP error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ✅ Get user's groups
+// ✅ Get user's groups (optional - for UI)
 app.post("/my-groups", async (req, res) => {
   try {
     const { token } = req.body;
