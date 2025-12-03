@@ -84,49 +84,74 @@ app.post("/join-group", async (req, res) => {
   }
 });
 
-// ✅ Send knock (SIMPLE VERSION)
+// ✅ SIMPLE: Send knock to entire group
 app.post("/send-knock", async (req, res) => {
   try {
-    const { senderToken, receiverToken } = req.body;
-    if (!senderToken || !receiverToken) {
-      return res.status(400).json({ error: "senderToken and receiverToken required" });
+    const { senderToken, groupCode } = req.body;
+    if (!senderToken || !groupCode) {
+      return res.status(400).json({ error: "senderToken and groupCode required" });
     }
 
-    // Get sender's IP
+    // 1. Get sender's current IP
     const senderIp = getCompletePublicIp(req);
     
-    console.log(`Knock attempt: ${senderToken.substring(0, 8)}... → ${receiverToken.substring(0, 8)}...`);
+    console.log(`👊 Knock from ${senderToken.substring(0, 8)}... to ENTIRE GROUP ${groupCode}`);
     
-    // Send attempt notification to receiver
-    const message = {
-      token: receiverToken,
-      notification: {
-        title: "👀 Knock Attempt",
-        body: "Someone is checking if you're home..."
-      },
-      data: {
-        type: "knock_attempt",
-        senderIp: senderIp,
-        senderToken: senderToken
-      },
-      android: { priority: "high" }
-    };
+    // 2. Get the group
+    const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
+    const groupDoc = await groupRef.get();
+    
+    if (!groupDoc.exists) {
+      return res.status(404).json({ error: "Group not found" });
+    }
 
-    await admin.messaging().send(message);
-    console.log(`Attempt notification sent to ${receiverToken.substring(0, 8)}...`);
+    const groupData = groupDoc.data();
+    const allMembers = Object.keys(groupData.members || {});
     
-    // Store sender's IP temporarily
+    // 3. Remove sender from list (don't knock yourself)
+    const receivers = allMembers.filter(token => token !== senderToken);
+    
+    if (receivers.length === 0) {
+      return res.status(400).json({ error: "No other members in group" });
+    }
+
+    console.log(`📋 Will knock ${receivers.length} member(s) in group`);
+    
+    // 4. Store sender's IP for comparison
     await firestore.collection("knock_temp").doc(senderToken).set({
       ip: senderIp,
       timestamp: new Date().toISOString()
     });
 
+    // 5. Send attempt notification to ALL receivers
+    const promises = receivers.map(receiverToken => {
+      const message = {
+        token: receiverToken,
+        notification: {
+          title: "👀 Knock Attempt",
+          body: "Someone is checking if you're home..."
+        },
+        data: {
+          type: "knock_attempt",
+          senderIp: senderIp,
+          senderToken: senderToken
+        },
+        android: { priority: "high" }
+      };
+      return admin.messaging().send(message);
+    });
+
+    await Promise.all(promises);
+    console.log(`📤 Attempt notifications sent to ${receivers.length} member(s)`);
+    
     res.json({ 
       success: true, 
-      message: "Knock attempt sent to receiver" 
+      message: `Knock attempt sent to ${receivers.length} group member(s)`,
+      count: receivers.length
     });
+
   } catch (err) {
-    console.error("Send knock error:", err);
+    console.error("❌ Send knock error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -139,25 +164,25 @@ app.post("/report-ip", async (req, res) => {
       return res.status(400).json({ error: "token, currentIp and senderToken required" });
     }
 
-    console.log(`IP report from ${token.substring(0, 8)}...: ${currentIp}`);
+    console.log(`📱 IP Report from ${token.substring(0, 8)}...: ${currentIp}`);
     
-    // Get sender's IP from temporary storage
+    // 1. Get sender's IP from temporary storage
     const senderDoc = await firestore.collection("knock_temp").doc(senderToken).get();
     
     if (!senderDoc.exists) {
-      console.log("No knock attempt found for this sender");
+      console.log("No active knock attempt found");
       return res.json({ success: true, ipMatch: false });
     }
 
     const senderData = senderDoc.data();
     const senderIp = senderData.ip;
     
-    console.log(`Comparing: Sender=${senderIp}, Receiver=${currentIp}`);
+    console.log(`🔍 IP Comparison: Sender=${senderIp}, Receiver=${currentIp}`);
     
-    // Compare IPs
+    // 2. Compare IPs immediately
     if (senderIp === currentIp) {
-      // IPs match - send actual knock
-      console.log("✅ IPs MATCH! Sending actual knock...");
+      // ✅ IPs MATCH - Send actual knock!
+      console.log(`✅ IPs MATCH! Sending actual knock to ${token.substring(0, 8)}...`);
       
       const knockMessage = {
         token: token,
@@ -172,18 +197,12 @@ app.post("/report-ip", async (req, res) => {
       };
 
       await admin.messaging().send(knockMessage);
-      
-      // Clean up temp data
-      await firestore.collection("knock_temp").doc(senderToken).delete();
+      console.log(`🎯 Actual knock notification sent.`);
       
       return res.json({ success: true, ipMatch: true, action: "knock_sent" });
     } else {
-      // IPs don't match - do nothing
-      console.log("❌ IPs DON'T match. No action taken.");
-      
-      // Clean up temp data
-      await firestore.collection("knock_temp").doc(senderToken).delete();
-      
+      // ❌ IPs DON'T MATCH - Do nothing
+      console.log(`❌ IPs DO NOT MATCH. No knock sent.`);
       return res.json({ success: true, ipMatch: false, action: "no_action" });
     }
   } catch (err) {
@@ -212,35 +231,10 @@ app.post("/my-groups", async (req, res) => {
       }
     });
 
-    console.log(`Found ${userGroups.length} groups`);
+    console.log(`Found ${userGroups.length} groups for user`);
     res.json({ success: true, groups: userGroups });
   } catch (err) {
     console.error("Get groups error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ✅ Get group members
-app.post("/group-members", async (req, res) => {
-  try {
-    const { groupCode, currentToken } = req.body;
-    if (!groupCode) return res.status(400).json({ error: "groupCode required" });
-
-    const groupDoc = await firestore.collection("groups").doc(groupCode.toUpperCase()).get();
-    if (!groupDoc.exists) return res.status(404).json({ error: "Group not found" });
-
-    const groupData = groupDoc.data();
-    const members = [];
-
-    for (const [memberToken] of Object.entries(groupData.members || {})) {
-      if (memberToken !== currentToken) {
-        members.push({ token: memberToken });
-      }
-    }
-
-    res.json({ success: true, members });
-  } catch (err) {
-    console.error("Get members error:", err);
     res.status(500).json({ error: err.message });
   }
 });
