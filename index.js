@@ -39,7 +39,7 @@ app.get("/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// ✅ Create group with IP
+// ✅ Create group with IP - FIXED: publicIp not public_ip
 app.post("/create-group", async (req, res) => {
   try {
     const { token, groupName } = req.body;
@@ -55,7 +55,7 @@ app.post("/create-group", async (req, res) => {
       members: { 
         [token]: { 
           joinedAt: Date.now(),
-          public_ip: userIp,
+          publicIp: userIp,  // FIXED: publicIp not public_ip
           last_ip_update: new Date().toISOString()
         } 
       }
@@ -74,7 +74,7 @@ app.post("/create-group", async (req, res) => {
   }
 });
 
-// ✅ Join group with IP
+// ✅ Join group with IP - FIXED: publicIp not public_ip
 app.post("/join-group", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
@@ -90,7 +90,7 @@ app.post("/join-group", async (req, res) => {
     await groupRef.update({
       [`members.${token}`]: { 
         joinedAt: Date.now(),
-        public_ip: userIp,
+        publicIp: userIp,  // FIXED: publicIp not public_ip
         last_ip_update: new Date().toISOString()
       }
     });
@@ -109,7 +109,7 @@ app.post("/join-group", async (req, res) => {
   }
 });
 
-// ✅ Update IP when connecting to WiFi
+// ✅ Update IP when connecting to WiFi - FIXED: publicIp not public_ip
 app.post("/update-ip", async (req, res) => {
   try {
     const { token } = req.body;
@@ -131,7 +131,7 @@ app.post("/update-ip", async (req, res) => {
         const groupRef = firestore.collection("groups").doc(doc.id);
         updatePromises.push(
           groupRef.update({
-            [`members.${token}.public_ip`]: publicIp,
+            [`members.${token}.publicIp`]: publicIp,  // FIXED: publicIp not public_ip
             [`members.${token}.last_ip_update`]: new Date().toISOString()
           })
         );
@@ -171,7 +171,7 @@ app.post("/set-offline", async (req, res) => {
   }
 });
 
-// ✅ SIMPLE KNOCK: With FULL DEBUG LOGGING
+// ✅ SIMPLE KNOCK: Compare IPs - FIXED: publicIp not public_ip
 app.post("/knock", async (req, res) => {
   try {
     const { senderToken, groupCode } = req.body;
@@ -222,14 +222,13 @@ app.post("/knock", async (req, res) => {
     console.log("-".repeat(40));
     
     const tokensToKnock = [];
-    let senderFound = false;
     
     Object.entries(members).forEach(([memberToken, memberData], index) => {
-      const memberIp = memberData.public_ip || "MISSING";
+      // FIXED: Changed from public_ip to publicIp
+      const memberIp = memberData.publicIp || "MISSING";
       const isSender = memberToken === senderToken;
       
       if (isSender) {
-        senderFound = true;
         console.log(`${index + 1}. 👤 ${memberToken.substring(0, 8)}... [SENDER]`);
       } else {
         console.log(`${index + 1}. 👤 ${memberToken.substring(0, 8)}...`);
@@ -245,10 +244,6 @@ app.post("/knock", async (req, res) => {
         tokensToKnock.push(memberToken);
       }
     });
-
-    if (!senderFound) {
-      console.log(`⚠️  WARNING: Sender token not found in iteration but was found earlier`);
-    }
 
     console.log("\n🎯 KNOCK DECISION:");
     console.log("-".repeat(40));
@@ -311,7 +306,7 @@ app.post("/knock", async (req, res) => {
   }
 });
 
-// ✅ Get user's groups
+// ✅ Get user's groups - FIXED: publicIp not public_ip
 app.post("/my-groups", async (req, res) => {
   try {
     const { token } = req.body;
@@ -327,7 +322,7 @@ app.post("/my-groups", async (req, res) => {
           groupCode: doc.id,
           groupName: groupData.name,
           memberCount: Object.keys(groupData.members).length,
-          yourIp: groupData.members[token].public_ip || "unknown"
+          yourIp: groupData.members[token].publicIp || "unknown"  // FIXED: publicIp not public_ip
         });
       }
     });
@@ -340,7 +335,7 @@ app.post("/my-groups", async (req, res) => {
   }
 });
 
-// ✅ Debug endpoint to check ANY group
+// ✅ Debug endpoint to check ANY group - FIXED: publicIp not public_ip
 app.post("/debug-group", async (req, res) => {
   try {
     const { groupCode } = req.body;
@@ -370,7 +365,7 @@ app.post("/debug-group", async (req, res) => {
     
     Object.entries(groupData.members || {}).forEach(([token, data], index) => {
       console.log(`${index + 1}. 👤 ${token.substring(0, 8)}...`);
-      console.log(`   📍 IP: ${data.public_ip || "MISSING"}`);
+      console.log(`   📍 IP: ${data.publicIp || "MISSING"}`);  // FIXED: publicIp not public_ip
       console.log(`   📅 Joined: ${new Date(data.joinedAt).toISOString()}`);
       console.log(`   🔄 Last IP Update: ${data.last_ip_update || "NEVER"}`);
       console.log("");
@@ -392,5 +387,5 @@ app.post("/debug-group", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚪 Knock Knock server running on port ${PORT}`);
-  console.log(`📝 DEBUG MODE: Full group details will be logged`);
+  console.log(`✅ FIXED: Using publicIp field (camelCase) instead of public_ip`);
 });
