@@ -108,7 +108,7 @@ app.post("/join-group", async (req, res) => {
   }
 });
 
-// ✅ Update IP when connecting to WiFi (Called by Android NetworkMonitor)
+// ✅ Update IP when connecting to WiFi
 app.post("/update-ip", async (req, res) => {
   try {
     const { token } = req.body;
@@ -116,13 +116,11 @@ app.post("/update-ip", async (req, res) => {
 
     const publicIp = getCompletePublicIp(req);
     
-    // 1. Update device_status collection
     await firestore.collection("device_status").doc(token).set({
       public_ip: publicIp,
       last_updated: new Date().toISOString()
     }, { merge: true });
 
-    // 2. Update IP in ALL groups this user belongs to
     const groupsSnapshot = await firestore.collection("groups").get();
     const updatePromises = [];
 
@@ -149,19 +147,17 @@ app.post("/update-ip", async (req, res) => {
   }
 });
 
-// ✅ Set device to offline/n/a when disconnecting from WiFi (Called by Android NetworkMonitor)
+// ✅ Set device to offline/n/a when disconnecting from WiFi
 app.post("/set-offline", async (req, res) => {
   try {
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: "token required" });
 
-    // Update device_status collection
     await firestore.collection("device_status").doc(token).set({
       public_ip: "n/a",
       last_updated: new Date().toISOString()
     }, { merge: true });
 
-    // Set IP to "n/a" in ALL groups this user belongs to
     const groupsSnapshot = await firestore.collection("groups").get();
     const updatePromises = [];
 
@@ -191,7 +187,7 @@ app.post("/set-offline", async (req, res) => {
   }
 });
 
-// ✅ SIMPLE KNOCK: Compare IPs from group document
+// ✅ SIMPLE KNOCK: Compare IPs from group document - FIXED FCM PAYLOAD
 app.post("/knock", async (req, res) => {
   try {
     const { senderToken, groupCode } = req.body;
@@ -221,9 +217,6 @@ app.post("/knock", async (req, res) => {
       if (memberToken !== senderToken) {
         const memberIp = memberData.publicIp || "n/a";
         
-        // Only send knock if:
-        // 1. IPs match exactly
-        // 2. Member IP is not "n/a" (meaning they're on WiFi)
         if (memberIp === senderIp && memberIp !== "n/a") {
           tokensToKnock.push(memberToken);
         }
@@ -238,24 +231,27 @@ app.post("/knock", async (req, res) => {
     }
 
     const promises = tokensToKnock.map(receiverToken => {
+      // FIXED: Data payload that triggers onMessageReceived in Android
       const message = {
         token: receiverToken,
-        notification: {
+        data: {
           title: "🔔 Door Knock!",
-          body: "Someone is at your door!"
+          body: "Someone is at your door!",
+          type: "knock",
+          timestamp: Date.now().toString()
         },
-        android: { 
-          priority: "high",
-          notification: {
-            sound: "default", // Ensures sound plays on Android
-            channel_id: "knock_channel"
-          }
+        android: {
+          priority: "high"
         },
         apns: {
           payload: {
             aps: {
-              sound: "knock.caf", // For iOS
-              contentAvailable: true
+              contentAvailable: true,
+              alert: {
+                title: "🔔 Door Knock!",
+                body: "Someone is at your door!"
+              },
+              sound: "default"
             }
           }
         }
@@ -310,6 +306,6 @@ app.post("/my-groups", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚪 Knock Knock server running on port ${PORT}`);
-  console.log(`📱 WiFi detection: ON (IP stored when on WiFi, n/a when disconnected)`);
-  console.log(`🔔 Knock logic: Send only if IPs match AND receiver is on WiFi (not n/a)`);
+  console.log(`📱 WiFi detection: ON`);
+  console.log(`🔔 Knock sound: FIXED (using data messages)`);
 });
