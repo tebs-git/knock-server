@@ -187,7 +187,7 @@ app.post("/set-offline", async (req, res) => {
   }
 });
 
-// ✅ SIMPLE KNOCK: Compare IPs from group document - FIXED FCM PAYLOAD
+// ✅ SIMPLE KNOCK: Compare IPs with device_status validation
 app.post("/knock", async (req, res) => {
   try {
     const { senderToken, groupCode } = req.body;
@@ -213,17 +213,43 @@ app.post("/knock", async (req, res) => {
 
     const tokensToKnock = [];
     
-    Object.entries(members).forEach(([memberToken, memberData]) => {
+    // Check each member
+    for (const [memberToken, memberData] of Object.entries(members)) {
       if (memberToken !== senderToken) {
         const memberIp = memberData.publicIp || "n/a";
         
-        if (memberIp === senderIp && memberIp !== "n/a") {
-          tokensToKnock.push(memberToken);
+        // Check 1: IPs must match
+        if (memberIp === senderIp) {
+          // Check 2: Member IP must not be "n/a"
+          if (memberIp !== "n/a") {
+            // Check 3: Verify in device_status collection for current status
+            const statusDoc = await firestore.collection("device_status").doc(memberToken).get();
+            
+            if (statusDoc.exists) {
+              const deviceStatus = statusDoc.data();
+              const currentStatus = deviceStatus.public_ip;
+              
+              // Final check: device_status must also not be "n/a"
+              if (currentStatus !== "n/a") {
+                tokensToKnock.push(memberToken);
+                console.log(`✅ ${memberToken.substring(0, 8)}... will receive knock (IP: ${memberIp})`);
+              } else {
+                console.log(`⚠️  ${memberToken.substring(0, 8)}... has n/a in device_status - skipping`);
+              }
+            } else {
+              console.log(`⚠️  ${memberToken.substring(0, 8)}... no device_status found - skipping`);
+            }
+          } else {
+            console.log(`⚠️  ${memberToken.substring(0, 8)}... has n/a in group - skipping`);
+          }
+        } else {
+          console.log(`⚠️  ${memberToken.substring(0, 8)}... IP mismatch: ${memberIp} vs ${senderIp}`);
         }
       }
-    });
+    }
 
     if (tokensToKnock.length === 0) {
+      console.log(`❌ No one home at IP: ${senderIp}`);
       return res.status(400).json({ 
         success: false,
         error: "No one home"
@@ -231,7 +257,7 @@ app.post("/knock", async (req, res) => {
     }
 
     const promises = tokensToKnock.map(receiverToken => {
-      // FIXED: Data payload that triggers onMessageReceived in Android
+      // Data payload that triggers onMessageReceived in Android
       const message = {
         token: receiverToken,
         data: {
@@ -306,6 +332,5 @@ app.post("/my-groups", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚪 Knock Knock server running on port ${PORT}`);
-  console.log(`📱 WiFi detection: ON`);
-  console.log(`🔔 Knock sound: FIXED (using data messages)`);
+  console.log(`🔒 Security: Double-checking device_status before sending knocks`);
 });
