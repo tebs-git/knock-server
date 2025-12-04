@@ -15,21 +15,31 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Get complete public IP address
+// ✅ Get consistent public IP address (Render-compatible)
 function getCompletePublicIp(req) {
-  const ip = req.headers['x-forwarded-for'] || 
-              req.connection.remoteAddress || 
-              req.socket.remoteAddress ||
-              req.ip ||
-              'unknown';
+  // Render-specific: x-forwarded-for contains the REAL client IP
+  // Format: "real_ip, load_balancer_ip, ..."
+  let ip = req.headers['x-forwarded-for'];
   
-  let completeIp = ip;
-  if (ip.includes(',')) {
-    completeIp = ip.split(',')[0].trim();
+  if (ip) {
+    // Take the FIRST IP in the chain (the original client)
+    const ipChain = ip.split(',').map(i => i.trim());
+    const clientIp = ipChain[0];
+    
+    // Clean up IPv6-mapped IPv4 addresses
+    const cleanIp = clientIp.replace(/^::ffff:/, '');
+    console.log(`🌐 IP from x-forwarded-for: ${cleanIp} (full chain: ${ipChain.join(' → ')})`);
+    return cleanIp;
   }
   
-  completeIp = completeIp.replace(/^::ffff:/, '');
-  return completeIp;
+  // Fallback - shouldn't happen on Render
+  ip = req.ip || 
+       req.connection.remoteAddress || 
+       req.socket.remoteAddress || 
+       'unknown';
+  
+  console.log(`⚠️  Using fallback IP: ${ip}`);
+  return ip.replace(/^::ffff:/, '');
 }
 
 // ✅ Health check
@@ -37,22 +47,35 @@ app.get("/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// ✅ Create group
+// ✅ Create group with IP synchronization
 app.post("/create-group", async (req, res) => {
   try {
     const { token, groupName } = req.body;
     if (!token || !groupName) return res.status(400).json({ error: "token and groupName required" });
 
     const groupCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const userIp = getCompletePublicIp(req); // Get creator's IP
     
     await firestore.collection("groups").doc(groupCode).set({
       name: groupName,
       code: groupCode,
       createdAt: Date.now(),
-      members: { [token]: { joinedAt: Date.now() } }
+      members: { 
+        [token]: { 
+          joinedAt: Date.now(),
+          public_ip: userIp,
+          last_ip_update: new Date().toISOString()
+        } 
+      }
     });
 
-    console.log(`Group created: ${groupName} (${groupCode})`);
+    // Also store in device_status for tracking
+    await firestore.collection("device_status").doc(token).set({
+      public_ip: userIp,
+      last_updated: new Date().toISOString()
+    }, { merge: true });
+
+    console.log(`✅ Group created: ${groupName} (${groupCode}) with creator IP: ${userIp}`);
     res.json({ success: true, groupCode, groupName });
   } catch (err) {
     console.error("Create group error:", err);
@@ -60,7 +83,7 @@ app.post("/create-group", async (req, res) => {
   }
 });
 
-// ✅ Join group
+// ✅ Join group with IP synchronization
 app.post("/join-group", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
@@ -71,12 +94,24 @@ app.post("/join-group", async (req, res) => {
     
     if (!groupDoc.exists) return res.status(404).json({ error: "Group not found" });
 
+    const userIp = getCompletePublicIp(req); // Get joiner's IP
+    
     await groupRef.update({
-      [`members.${token}`]: { joinedAt: Date.now() }
+      [`members.${token}`]: { 
+        joinedAt: Date.now(),
+        public_ip: userIp,
+        last_ip_update: new Date().toISOString()
+      }
     });
 
+    // Also store in device_status for tracking
+    await firestore.collection("device_status").doc(token).set({
+      public_ip: userIp,
+      last_updated: new Date().toISOString()
+    }, { merge: true });
+
     const groupData = groupDoc.data();
-    console.log(`User joined group ${groupCode}`);
+    console.log(`✅ User joined group ${groupCode} with IP: ${userIp}`);
     res.json({ success: true, groupName: groupData.name, groupCode });
   } catch (err) {
     console.error("Join group error:", err);
@@ -84,7 +119,7 @@ app.post("/join-group", async (req, res) => {
   }
 });
 
-// ✅ Update IP when connecting to WiFi
+// ✅ Update IP when connecting to WiFi (SYNCHRONIZED to groups)
 app.post("/update-ip", async (req, res) => {
   try {
     const { token } = req.body;
@@ -92,39 +127,86 @@ app.post("/update-ip", async (req, res) => {
 
     const publicIp = getCompletePublicIp(req);
     
+    // 1. Update device_status collection
     await firestore.collection("device_status").doc(token).set({
       public_ip: publicIp,
       last_updated: new Date().toISOString()
     }, { merge: true });
 
-    console.log(`📱 ${token.substring(0, 8)}... IP updated: ${publicIp}`);
-    res.json({ success: true, public_ip: publicIp });
+    // 2. Find ALL groups this user belongs to and update their IP there too
+    const groupsSnapshot = await firestore.collection("groups").get();
+    const updatePromises = [];
+    let groupsUpdated = 0;
+
+    groupsSnapshot.forEach(doc => {
+      const groupData = doc.data();
+      if (groupData.members && groupData.members[token]) {
+        // Update this user's IP in the group document
+        const groupRef = firestore.collection("groups").doc(doc.id);
+        updatePromises.push(
+          groupRef.update({
+            [`members.${token}.public_ip`]: publicIp,
+            [`members.${token}.last_ip_update`]: new Date().toISOString()
+          })
+        );
+        groupsUpdated++;
+        console.log(`📱 Updated IP in group ${doc.id} for ${token.substring(0, 8)}...`);
+      }
+    });
+
+    await Promise.all(updatePromises);
+    
+    console.log(`📱 ${token.substring(0, 8)}... IP updated: ${publicIp} (synced to ${groupsUpdated} groups)`);
+    res.json({ success: true, public_ip: publicIp, groups_updated: groupsUpdated });
   } catch (err) {
     console.error("Update IP error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ Set IP to "n/a" when disconnecting
+// ✅ Set IP to "n/a" when disconnecting (SYNCHRONIZED to groups)
 app.post("/set-offline", async (req, res) => {
   try {
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: "token required" });
 
+    // 1. Update device_status collection
     await firestore.collection("device_status").doc(token).set({
       public_ip: "n/a",
       last_updated: new Date().toISOString()
     }, { merge: true });
 
-    console.log(`📱 ${token.substring(0, 8)}... set to offline (n/a)`);
-    res.json({ success: true, status: "offline" });
+    // 2. Find ALL groups this user belongs to and set to "n/a"
+    const groupsSnapshot = await firestore.collection("groups").get();
+    const updatePromises = [];
+    let groupsUpdated = 0;
+
+    groupsSnapshot.forEach(doc => {
+      const groupData = doc.data();
+      if (groupData.members && groupData.members[token]) {
+        const groupRef = firestore.collection("groups").doc(doc.id);
+        updatePromises.push(
+          groupRef.update({
+            [`members.${token}.public_ip`]: "n/a",
+            [`members.${token}.last_ip_update`]: new Date().toISOString()
+          })
+        );
+        groupsUpdated++;
+        console.log(`📱 Set offline in group ${doc.id} for ${token.substring(0, 8)}...`);
+      }
+    });
+
+    await Promise.all(updatePromises);
+    
+    console.log(`📱 ${token.substring(0, 8)}... set to offline (synced to ${groupsUpdated} groups)`);
+    res.json({ success: true, status: "offline", groups_updated: groupsUpdated });
   } catch (err) {
     console.error("Set offline error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ SIMPLE KNOCK: Compare stored IPs, send if match
+// ✅ SIMPLE KNOCK: Compare IPs FROM THE GROUP DOCUMENT (FIXED)
 app.post("/knock", async (req, res) => {
   try {
     const { senderToken, groupCode } = req.body;
@@ -136,7 +218,7 @@ app.post("/knock", async (req, res) => {
     const senderIp = getCompletePublicIp(req);
     console.log(`👊 Knock from ${senderToken.substring(0, 8)}... (IP: ${senderIp}) to group ${groupCode}`);
     
-    // 2. Get the group
+    // 2. Get the group document
     const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
     const groupDoc = await groupRef.get();
     
@@ -145,41 +227,45 @@ app.post("/knock", async (req, res) => {
     }
 
     const groupData = groupDoc.data();
-    const allMembers = Object.keys(groupData.members || {});
+    const members = groupData.members || {};
     
-    // 3. Remove sender from list (don't knock yourself)
-    const receivers = allMembers.filter(token => token !== senderToken);
-    
-    if (receivers.length === 0) {
-      return res.status(400).json({ error: "No other members in group" });
+    // 3. Check if sender is in this group
+    if (!members[senderToken]) {
+      return res.status(403).json({ error: "You are not a member of this group" });
     }
 
-    console.log(`📋 Checking ${receivers.length} member(s) in group`);
-    
-    // 4. For each receiver, check their stored IP
+    // 4. Get all other members (remove sender) and check their IPs FROM GROUP DOCUMENT
     const tokensToKnock = [];
+    const memberDetails = [];
     
-    for (const receiverToken of receivers) {
-      // Get receiver's stored IP from device_status collection
-      const statusDoc = await firestore.collection("device_status").doc(receiverToken).get();
-      
-      if (statusDoc.exists) {
-        const receiverData = statusDoc.data();
-        const receiverIp = receiverData.public_ip;
+    Object.entries(members).forEach(([memberToken, memberData]) => {
+      if (memberToken !== senderToken) {
+        const memberIp = memberData.public_ip || "n/a";
         
-        console.log(`🔍 ${receiverToken.substring(0, 8)}...: stored IP = ${receiverIp}, sender IP = ${senderIp}`);
+        console.log(`🔍 Member ${memberToken.substring(0, 8)}...: IP = "${memberIp}", Sender IP = "${senderIp}"`);
+        memberDetails.push(`${memberToken.substring(0, 8)}...: ${memberIp}`);
         
         // Compare IPs - only knock if they match AND not "n/a"
-        if (receiverIp === senderIp && receiverIp !== "n/a") {
-          tokensToKnock.push(receiverToken);
-          console.log(`✅ Match! Will knock ${receiverToken.substring(0, 8)}...`);
+        if (memberIp === senderIp && memberIp !== "n/a") {
+          tokensToKnock.push(memberToken);
+          console.log(`✅ Match! Will knock ${memberToken.substring(0, 8)}...`);
         }
       }
-    }
+    });
 
     if (tokensToKnock.length === 0) {
       console.log(`❌ No one in group has matching IP (${senderIp})`);
-      return res.status(400).json({ error: "No one home" });
+      console.log(`📋 Member IPs in group: ${memberDetails.join(', ')}`);
+      
+      return res.status(400).json({ 
+        success: false,
+        error: "No one home", 
+        details: {
+          senderIp: senderIp,
+          groupMembers: memberDetails,
+          message: "No group members have matching IP. Make sure they're on same WiFi and IP is updated."
+        }
+      });
     }
 
     // 5. Send actual knock to matched members
@@ -196,7 +282,7 @@ app.post("/knock", async (req, res) => {
     });
 
     await Promise.all(promises);
-    console.log(`📤 Actual knock sent to ${tokensToKnock.length} member(s)`);
+    console.log(`📤 Actual knock sent to ${tokensToKnock.length} member(s): ${tokensToKnock.map(t => t.substring(0, 8) + '...').join(', ')}`);
     
     res.json({ 
       success: true, 
@@ -206,11 +292,11 @@ app.post("/knock", async (req, res) => {
 
   } catch (err) {
     console.error("❌ Knock error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ✅ Get user's groups (optional - for UI)
+// ✅ Get user's groups
 app.post("/my-groups", async (req, res) => {
   try {
     const { token } = req.body;
@@ -226,11 +312,12 @@ app.post("/my-groups", async (req, res) => {
           groupCode: doc.id,
           groupName: groupData.name,
           memberCount: Object.keys(groupData.members).length,
+          yourIp: groupData.members[token].public_ip || "unknown"
         });
       }
     });
 
-    console.log(`Found ${userGroups.length} groups for user`);
+    console.log(`Found ${userGroups.length} groups for user ${token.substring(0, 8)}...`);
     res.json({ success: true, groups: userGroups });
   } catch (err) {
     console.error("Get groups error:", err);
@@ -238,7 +325,34 @@ app.post("/my-groups", async (req, res) => {
   }
 });
 
+// ✅ Get group members (optional)
+app.post("/group-members", async (req, res) => {
+  try {
+    const { groupCode } = req.body;
+    if (!groupCode) return res.status(400).json({ error: "groupCode required" });
+
+    const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
+    const groupDoc = await groupRef.get();
+    
+    if (!groupDoc.exists) return res.status(404).json({ error: "Group not found" });
+
+    const groupData = groupDoc.data();
+    const members = Object.entries(groupData.members || {}).map(([token, data]) => ({
+      token: token.substring(0, 8) + '...',
+      ip: data.public_ip || "unknown",
+      joinedAt: data.joinedAt,
+      lastIpUpdate: data.last_ip_update
+    }));
+
+    res.json({ success: true, members: members, groupName: groupData.name });
+  } catch (err) {
+    console.error("Get members error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚪 Knock Knock server running on port ${PORT}`);
+  console.log(`🔧 IP synchronization: ON (IPs stored in both device_status and groups)`);
 });
