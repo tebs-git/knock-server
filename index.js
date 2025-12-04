@@ -351,8 +351,63 @@ app.post("/group-members", async (req, res) => {
   }
 });
 
+// ✅ DEBUG: Check exact database state
+app.post("/debug-group", async (req, res) => {
+  try {
+    const { groupCode, token } = req.body;
+    
+    console.log("🔍 DEBUG GROUP REQUEST");
+    console.log("Group Code:", groupCode);
+    console.log("Token:", token ? token.substring(0, 8) + "..." : "none");
+    
+    // Get group data
+    const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
+    const groupDoc = await groupRef.get();
+    
+    if (!groupDoc.exists) {
+      return res.json({ error: "Group not found" });
+    }
+    
+    const groupData = groupDoc.data();
+    console.log("Group Name:", groupData.name);
+    
+    // List all members
+    const members = groupData.members || {};
+    console.log(`Total Members: ${Object.keys(members).length}`);
+    
+    Object.entries(members).forEach(([memberToken, memberData]) => {
+      console.log(`👤 ${memberToken.substring(0, 8)}...:`);
+      console.log(`   IP: ${memberData.public_ip || "MISSING"}`);
+      console.log(`   Joined: ${new Date(memberData.joinedAt).toISOString()}`);
+      console.log(`   Last IP Update: ${memberData.last_ip_update || "NEVER"}`);
+    });
+    
+    // Also check device_status
+    if (token) {
+      const statusDoc = await firestore.collection("device_status").doc(token).get();
+      if (statusDoc.exists) {
+        const statusData = statusDoc.data();
+        console.log(`📱 Device Status for ${token.substring(0, 8)}...:`);
+        console.log(`   IP: ${statusData.public_ip || "MISSING"}`);
+        console.log(`   Last Updated: ${statusData.last_updated || "NEVER"}`);
+      }
+    }
+    
+    res.json({ 
+      success: true, 
+      group: groupData,
+      message: "Check server logs for details"
+    });
+    
+  } catch (err) {
+    console.error("Debug error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚪 Knock Knock server running on port ${PORT}`);
   console.log(`🔧 IP synchronization: ON (IPs stored in both device_status and groups)`);
 });
+
