@@ -15,32 +15,38 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Temporary storage for knock attempts (in-memory, reset on server restart)
 const pendingKnocks = new Map();
 
-// ✅ Get consistent public IP address
+// ✅ Get IP from request
 function getCompletePublicIp(req) {
   let ip = req.headers['x-forwarded-for'];
-  
   if (ip) {
     const ipChain = ip.split(',').map(i => i.trim());
     const clientIp = ipChain[0];
-    const cleanIp = clientIp.replace(/^::ffff:/, '');
-    return cleanIp;
+    return clientIp.replace(/^::ffff:/, '');
   }
-  
-  ip = req.ip || 
-       req.connection.remoteAddress || 
-       req.socket.remoteAddress || 
-       'unknown';
-  
+  ip = req.ip || req.connection.remoteAddress || req.socket.remoteAddress || 'unknown';
   return ip.replace(/^::ffff:/, '');
 }
 
-// ✅ Health check
+// ✅ Health check (essential for Render)
 app.get("/health", (req, res) => {
-  res.json({ status: "OK", timestamp: new Date().toISOString() });
+  res.json({ status: "OK" });
 });
+
+// ✅ Helper: Set active group
+async function setUserActiveGroup(token, groupCode) {
+  await firestore.collection("user_preferences").doc(token).set({
+    active_group: groupCode,
+    last_updated: new Date().toISOString()
+  }, { merge: true });
+}
+
+// ✅ Helper: Get active group
+async function getUserActiveGroup(token) {
+  const prefDoc = await firestore.collection("user_preferences").doc(token).get();
+  return prefDoc.exists ? prefDoc.data().active_group || null : null;
+}
 
 // ✅ Create group
 app.post("/create-group", async (req, res) => {
@@ -55,17 +61,14 @@ app.post("/create-group", async (req, res) => {
       code: groupCode,
       createdAt: Date.now(),
       members: { 
-        [token]: { 
-          joinedAt: Date.now(),
-          last_active: new Date().toISOString()
-        } 
+        [token]: { joinedAt: Date.now() } 
       }
     });
 
-    console.log(`Group created: ${groupName} (${groupCode})`);
-    res.json({ success: true, groupCode, groupName });
+    await setUserActiveGroup(token, groupCode);
+    
+    res.json({ success: true, groupCode, groupName, is_active: true });
   } catch (err) {
-    console.error("Create group error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -76,247 +79,32 @@ app.post("/join-group", async (req, res) => {
     const { token, groupCode } = req.body;
     if (!token || !groupCode) return res.status(400).json({ error: "token and groupCode required" });
 
-    const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
+    const cleanGroupCode = groupCode.toUpperCase();
+    const groupRef = firestore.collection("groups").doc(cleanGroupCode);
     const groupDoc = await groupRef.get();
     
     if (!groupDoc.exists) return res.status(404).json({ error: "Group not found" });
 
     await groupRef.update({
-      [`members.${token}`]: { 
-        joinedAt: Date.now(),
-        last_active: new Date().toISOString()
-      }
+      [`members.${token}`]: { joinedAt: Date.now() }
     });
 
+    await setUserActiveGroup(token, cleanGroupCode);
+
     const groupData = groupDoc.data();
-    res.json({ success: true, groupName: groupData.name, groupCode });
+    res.json({ success: true, groupName: groupData.name, groupCode: cleanGroupCode, is_active: true });
   } catch (err) {
-    console.error("Join group error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ STEP 1: Knock Attempt - Sender initiates knock
-app.post("/knock-attempt", async (req, res) => {
-  try {
-    const { senderToken, groupCode } = req.body;
-    if (!senderToken || !groupCode) {
-      return res.status(400).json({ error: "senderToken and groupCode required" });
-    }
-
-    const senderIp = getCompletePublicIp(req);
-    
-    const groupRef = firestore.collection("groups").doc(groupCode.toUpperCase());
-    const groupDoc = await groupRef.get();
-    
-    if (!groupDoc.exists) {
-      return res.status(404).json({ error: "Group not found" });
-    }
-
-    const groupData = groupDoc.data();
-    const members = groupData.members || {};
-    
-    if (!members[senderToken]) {
-      return res.status(403).json({ error: "You are not a member of this group" });
-    }
-
-    // Store knock attempt data
-    const knockId = Date.now().toString() + Math.random().toString(36).substring(2, 9);
-    const pendingData = {
-      knockId,
-      senderToken,
-      senderIp,
-      groupCode: groupCode.toUpperCase(),
-      timestamp: Date.now(),
-      receiversReported: new Set() // Track which receivers have reported IP
-    };
-    
-    pendingKnocks.set(knockId, pendingData);
-    
-    // Set timeout to clean up after 30 seconds
-    setTimeout(() => {
-      if (pendingKnocks.has(knockId)) {
-        console.log(`🧹 Cleaning up expired knock attempt: ${knockId}`);
-        pendingKnocks.delete(knockId);
-      }
-    }, 30000);
-
-    // Send first notification to all other group members
-    const promises = [];
-    const receiverTokens = [];
-    
-    for (const [memberToken, memberData] of Object.entries(members)) {
-      if (memberToken !== senderToken) {
-        receiverTokens.push(memberToken);
-        
-        const message = {
-          token: memberToken,
-          data: {
-            title: "🔍 Knock Attempt",
-            body: "Someone is checking if you're home...",
-            type: "knock-attempt",
-            knockId: knockId,
-            senderToken: senderToken,
-            timestamp: Date.now().toString()
-          },
-          android: {
-            priority: "high"
-          },
-          apns: {
-            payload: {
-              aps: {
-                contentAvailable: true,
-                alert: {
-                  title: "🔍 Knock Attempt",
-                  body: "Someone is checking if you're home..."
-                },
-                sound: "default"
-              }
-            }
-          }
-        };
-        promises.push(admin.messaging().send(message));
-      }
-    }
-
-    if (receiverTokens.length === 0) {
-      pendingKnocks.delete(knockId);
-      return res.status(400).json({ 
-        success: false,
-        error: "No one else in the group"
-      });
-    }
-
-    await Promise.all(promises);
-    
-    console.log(`📤 Knock attempt ${knockId} sent to ${receiverTokens.length} receiver(s)`);
-    console.log(`   Sender: ${senderToken.substring(0, 8)}..., Group: ${groupCode}, IP: ${senderIp}`);
-    console.log(`   Receivers: ${receiverTokens.map(t => t.substring(0, 8) + '...').join(', ')}`);
-    
-    res.json({ 
-      success: true, 
-      message: `Checking ${receiverTokens.length} person(s) on this WiFi...`,
-      knockId: knockId,
-      count: receiverTokens.length
-    });
-
-  } catch (err) {
-    console.error("Knock attempt error:", err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ✅ STEP 2: Report IP - Receiver reports current IP when they get knock-attempt
-app.post("/report-ip", async (req, res) => {
-  try {
-    const { token, knockId } = req.body;
-    if (!token || !knockId) {
-      return res.status(400).json({ error: "token and knockId required" });
-    }
-
-    const receiverIp = getCompletePublicIp(req);
-    
-    // Find the pending knock attempt
-    const pendingData = pendingKnocks.get(knockId);
-    if (!pendingData) {
-      return res.status(404).json({ error: "Knock attempt not found or expired" });
-    }
-
-    // ✅ CRITICAL: Check if receiver is in the same group as sender
-    const groupRef = firestore.collection("groups").doc(pendingData.groupCode);
-    const groupDoc = await groupRef.get();
-    
-    if (!groupDoc.exists) {
-      console.log(`❌ Group ${pendingData.groupCode} no longer exists for knock ${knockId}`);
-      return res.status(404).json({ error: "Group not found" });
-    }
-
-    const groupData = groupDoc.data();
-    const members = groupData.members || {};
-    
-    // Check if receiver is actually a member of this group
-    if (!members[token]) {
-      console.log(`❌ Receiver ${token.substring(0, 8)}... is NOT a member of group ${pendingData.groupCode}`);
-      return res.status(403).json({ error: "You are not a member of this group" });
-    }
-
-    // Store receiver's IP
-    pendingData.receiversReported.add(token);
-    
-    console.log(`📱 Receiver ${token.substring(0, 8)}... reported IP: ${receiverIp} for knock ${knockId}`);
-    console.log(`   Group: ${pendingData.groupCode}, Sender IP: ${pendingData.senderIp}`);
-    
-    // Check if IPs match (same WiFi network)
-    const isSameNetwork = (receiverIp === pendingData.senderIp);
-    
-    // Schedule the second notification in 4 seconds
-    setTimeout(async () => {
-      try {
-        if (isSameNetwork) {
-          // ✅ IPs match AND receiver is in the same group - send actual knock notification
-          const message = {
-            token: token,
-            data: {
-              title: "🚪 Door Knock!",
-              body: "Someone is at your door!",
-              type: "actual-knock",
-              knockId: knockId,
-              timestamp: Date.now().toString()
-            },
-            android: {
-              priority: "high"
-            },
-            apns: {
-              payload: {
-                aps: {
-                  contentAvailable: true,
-                  alert: {
-                    title: "🚪 Door Knock!",
-                    body: "Someone is at your door!"
-                  },
-                  sound: "default"
-                }
-              }
-            }
-          };
-          
-          await admin.messaging().send(message);
-          console.log(`✅ Actual knock sent to ${token.substring(0, 8)}...`);
-          console.log(`   ✓ IP match: ${receiverIp} === ${pendingData.senderIp}`);
-          console.log(`   ✓ Group verified: ${pendingData.groupCode}`);
-        } else {
-          console.log(`❌ IP mismatch for ${token.substring(0, 8)}...`);
-          console.log(`   Receiver IP: ${receiverIp}`);
-          console.log(`   Sender IP: ${pendingData.senderIp}`);
-          console.log(`   Not on same WiFi - no knock sent`);
-          // No second notification sent - they're not on the same WiFi
-        }
-      } catch (error) {
-        console.error("Error sending second notification:", error);
-      }
-    }, 4000); // 4 second delay
-
-    res.json({ 
-      success: true, 
-      message: "IP reported successfully",
-      isSameNetwork: isSameNetwork,
-      receiverIp: receiverIp,
-      senderIp: pendingData.senderIp,
-      groupVerified: true
-    });
-
-  } catch (err) {
-    console.error("Report IP error:", err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ✅ Get user's groups
+// ✅ Get user's groups with active status
 app.post("/my-groups", async (req, res) => {
   try {
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: "token required" });
 
+    const activeGroup = await getUserActiveGroup(token);
     const groupsSnapshot = await firestore.collection("groups").get();
     const userGroups = [];
 
@@ -326,52 +114,190 @@ app.post("/my-groups", async (req, res) => {
         userGroups.push({
           groupCode: doc.id,
           groupName: groupData.name,
-          memberCount: Object.keys(groupData.members).length
+          memberCount: Object.keys(groupData.members).length,
+          is_active: (doc.id === activeGroup)
         });
       }
     });
 
-    res.json({ success: true, groups: userGroups });
+    res.json({ success: true, groups: userGroups, active_group: activeGroup });
   } catch (err) {
-    console.error("Get groups error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ Cleanup endpoint (optional, for debugging)
-app.get("/cleanup-pending", (req, res) => {
-  const before = pendingKnocks.size;
-  pendingKnocks.clear();
-  res.json({ 
-    success: true, 
-    message: `Cleaned up ${before} pending knocks`,
-    remaining: pendingKnocks.size 
-  });
+// ✅ Set active group
+app.post("/set-active-group", async (req, res) => {
+  try {
+    const { token, groupCode } = req.body;
+    if (!token || !groupCode) return res.status(400).json({ error: "token and groupCode required" });
+
+    const cleanGroupCode = groupCode.toUpperCase();
+    const groupRef = firestore.collection("groups").doc(cleanGroupCode);
+    const groupDoc = await groupRef.get();
+    
+    if (!groupDoc.exists) return res.status(404).json({ error: "Group not found" });
+    
+    const groupData = groupDoc.data();
+    if (!groupData.members || !groupData.members[token]) {
+      return res.status(403).json({ error: "Not a member" });
+    }
+
+    await setUserActiveGroup(token, cleanGroupCode);
+    
+    res.json({ success: true, groupCode: cleanGroupCode, groupName: groupData.name });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// ✅ Status endpoint (for debugging)
-app.get("/pending-status", (req, res) => {
-  const pendingList = Array.from(pendingKnocks.entries()).map(([id, data]) => ({
-    knockId: id,
-    senderToken: data.senderToken.substring(0, 8) + '...',
-    senderIp: data.senderIp,
-    groupCode: data.groupCode,
-    timestamp: new Date(data.timestamp).toISOString(),
-    receiversReported: Array.from(data.receiversReported).map(t => t.substring(0, 8) + '...')
-  }));
-  
-  res.json({
-    success: true,
-    pendingCount: pendingKnocks.size,
-    pendingKnocks: pendingList
-  });
+// ✅ Get active group only
+app.post("/get-active-group", async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: "token required" });
+
+    const activeGroupCode = await getUserActiveGroup(token);
+    
+    if (!activeGroupCode) {
+      return res.json({ success: true, has_active_group: false });
+    }
+
+    const groupRef = firestore.collection("groups").doc(activeGroupCode);
+    const groupDoc = await groupRef.get();
+    
+    if (!groupDoc.exists) {
+      return res.json({ success: true, has_active_group: false });
+    }
+
+    const groupData = groupDoc.data();
+    res.json({ 
+      success: true, 
+      has_active_group: true,
+      groupCode: activeGroupCode,
+      groupName: groupData.name
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ Knock attempt
+app.post("/knock-attempt", async (req, res) => {
+  try {
+    const { senderToken, groupCode } = req.body;
+    if (!senderToken || !groupCode) {
+      return res.status(400).json({ error: "senderToken and groupCode required" });
+    }
+
+    const senderIp = getCompletePublicIp(req);
+    const cleanGroupCode = groupCode.toUpperCase();
+    const groupRef = firestore.collection("groups").doc(cleanGroupCode);
+    const groupDoc = await groupRef.get();
+    
+    if (!groupDoc.exists) return res.status(404).json({ error: "Group not found" });
+
+    const groupData = groupDoc.data();
+    const members = groupData.members || {};
+    
+    if (!members[senderToken]) {
+      return res.status(403).json({ error: "Not a member" });
+    }
+
+    const knockId = Date.now().toString();
+    const pendingData = {
+      knockId,
+      senderToken,
+      senderIp,
+      groupCode: cleanGroupCode,
+      timestamp: Date.now(),
+      receiversReported: new Set()
+    };
+    
+    pendingKnocks.set(knockId, pendingData);
+    
+    setTimeout(() => {
+      pendingKnocks.delete(knockId);
+    }, 30000);
+
+    const receiverTokens = Object.keys(members).filter(t => t !== senderToken);
+    
+    if (receiverTokens.length === 0) {
+      return res.status(400).json({ success: false, error: "No one else in group" });
+    }
+
+    const messages = receiverTokens.map(token => ({
+      token: token,
+      data: {
+        title: "🔍 Knock Attempt",
+        body: "Someone is checking if you're home...",
+        type: "knock-attempt",
+        knockId: knockId,
+        senderToken: senderToken
+      },
+      android: { priority: "high" }
+    }));
+
+    await Promise.all(messages.map(msg => admin.messaging().send(msg)));
+    
+    res.json({ 
+      success: true, 
+      message: `Checking ${receiverTokens.length} person(s)...`,
+      knockId: knockId,
+      count: receiverTokens.length
+    });
+
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ✅ Report IP
+app.post("/report-ip", async (req, res) => {
+  try {
+    const { token, knockId } = req.body;
+    if (!token || !knockId) {
+      return res.status(400).json({ error: "token and knockId required" });
+    }
+
+    const receiverIp = getCompletePublicIp(req);
+    const pendingData = pendingKnocks.get(knockId);
+    if (!pendingData) return res.status(404).json({ error: "Knock attempt expired" });
+
+    const groupRef = firestore.collection("groups").doc(pendingData.groupCode);
+    const groupDoc = await groupRef.get();
+    if (!groupDoc.exists) return res.status(404).json({ error: "Group not found" });
+
+    const groupData = groupDoc.data();
+    if (!groupData.members || !groupData.members[token]) {
+      return res.status(403).json({ error: "Not a member" });
+    }
+
+    pendingData.receiversReported.add(token);
+    const isSameNetwork = (receiverIp === pendingData.senderIp);
+    
+    setTimeout(async () => {
+      if (isSameNetwork && pendingKnocks.has(knockId)) {
+        const message = {
+          token: token,
+          data: {
+            title: "🚪 Door Knock!",
+            body: "Someone is at your door!",
+            type: "actual-knock"
+          },
+          android: { priority: "high" }
+        };
+        await admin.messaging().send(message);
+      }
+    }, 4000);
+
+    res.json({ success: true, isSameNetwork: isSameNetwork });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚪 WiFi Knock Knock Server running on port ${PORT}`);
-  console.log(`🎯 Two-step knock system active:`);
-  console.log(`   1. Knock attempt → "Checking if you're home..."`);
-  console.log(`   2. IP report → 4s delay → Actual knock if same WiFi AND same group`);
-  console.log(`   🔒 Security: Requires BOTH same group membership AND same IP`);
+  console.log(`🚪 WiFi Knock Knock Server on port ${PORT}`);
 });
