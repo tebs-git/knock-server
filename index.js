@@ -66,7 +66,7 @@ app.post("/create-group", async (req, res) => {
       last_updated: new Date().toISOString()
     }, { merge: true });
 
-    console.log(`Group created: ${groupName} (${groupCode})`);
+    console.log(`Group created: ${groupName} (${groupCode}) by IP: ${userIp}`);
     res.json({ success: true, groupCode, groupName });
   } catch (err) {
     console.error("Create group error:", err);
@@ -108,7 +108,7 @@ app.post("/join-group", async (req, res) => {
   }
 });
 
-// ✅ Update IP when connecting to WiFi
+// ✅ Update IP - ALWAYS update with whatever IP the device has (WiFi or Mobile)
 app.post("/update-ip", async (req, res) => {
   try {
     const { token } = req.body;
@@ -116,11 +116,13 @@ app.post("/update-ip", async (req, res) => {
 
     const publicIp = getCompletePublicIp(req);
     
+    // ALWAYS update with the current IP (could be WiFi, mobile, etc.)
     await firestore.collection("device_status").doc(token).set({
       public_ip: publicIp,
       last_updated: new Date().toISOString()
     }, { merge: true });
 
+    // Update in all groups this user belongs to
     const groupsSnapshot = await firestore.collection("groups").get();
     const updatePromises = [];
 
@@ -147,47 +149,7 @@ app.post("/update-ip", async (req, res) => {
   }
 });
 
-// ✅ Set device to offline/n/a when disconnecting from WiFi
-app.post("/set-offline", async (req, res) => {
-  try {
-    const { token } = req.body;
-    if (!token) return res.status(400).json({ error: "token required" });
-
-    await firestore.collection("device_status").doc(token).set({
-      public_ip: "n/a",
-      last_updated: new Date().toISOString()
-    }, { merge: true });
-
-    const groupsSnapshot = await firestore.collection("groups").get();
-    const updatePromises = [];
-
-    groupsSnapshot.forEach(doc => {
-      const groupData = doc.data();
-      if (groupData.members && groupData.members[token]) {
-        const groupRef = firestore.collection("groups").doc(doc.id);
-        updatePromises.push(
-          groupRef.update({
-            [`members.${token}.publicIp`]: "n/a",
-            [`members.${token}.last_ip_update`]: new Date().toISOString()
-          })
-        );
-      }
-    });
-
-    await Promise.all(updatePromises);
-    
-    console.log(`📱 ${token.substring(0, 8)}... set to offline/n/a`);
-    res.json({ 
-      success: true, 
-      status: "offline"
-    });
-  } catch (err) {
-    console.error("Set offline error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ✅ SIMPLE KNOCK: Compare IPs with device_status validation
+// ✅ SIMPLE KNOCK: Compare IPs directly (no "n/a" checks needed)
 app.post("/knock", async (req, res) => {
   try {
     const { senderToken, groupCode } = req.body;
@@ -216,32 +178,12 @@ app.post("/knock", async (req, res) => {
     // Check each member
     for (const [memberToken, memberData] of Object.entries(members)) {
       if (memberToken !== senderToken) {
-        const memberIp = memberData.publicIp || "n/a";
+        const memberIp = memberData.publicIp || "unknown";
         
-        // Check 1: IPs must match
+        // SIMPLE CHECK: Compare IPs directly
         if (memberIp === senderIp) {
-          // Check 2: Member IP must not be "n/a"
-          if (memberIp !== "n/a") {
-            // Check 3: Verify in device_status collection for current status
-            const statusDoc = await firestore.collection("device_status").doc(memberToken).get();
-            
-            if (statusDoc.exists) {
-              const deviceStatus = statusDoc.data();
-              const currentStatus = deviceStatus.public_ip;
-              
-              // Final check: device_status must also not be "n/a"
-              if (currentStatus !== "n/a") {
-                tokensToKnock.push(memberToken);
-                console.log(`✅ ${memberToken.substring(0, 8)}... will receive knock (IP: ${memberIp})`);
-              } else {
-                console.log(`⚠️  ${memberToken.substring(0, 8)}... has n/a in device_status - skipping`);
-              }
-            } else {
-              console.log(`⚠️  ${memberToken.substring(0, 8)}... no device_status found - skipping`);
-            }
-          } else {
-            console.log(`⚠️  ${memberToken.substring(0, 8)}... has n/a in group - skipping`);
-          }
+          tokensToKnock.push(memberToken);
+          console.log(`✅ ${memberToken.substring(0, 8)}... will receive knock (IP match: ${memberIp})`);
         } else {
           console.log(`⚠️  ${memberToken.substring(0, 8)}... IP mismatch: ${memberIp} vs ${senderIp}`);
         }
@@ -329,8 +271,10 @@ app.post("/my-groups", async (req, res) => {
   }
 });
 
+// ✅ REMOVED: /set-offline endpoint (not needed anymore)
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚪 Knock Knock server running on port ${PORT}`);
-  console.log(`🔒 Security: Double-checking device_status before sending knocks`);
+  console.log(`🔧 Simplified: Always storing actual IPs, no "n/a" logic`);
 });
