@@ -36,16 +36,32 @@ app.get("/health", (req, res) => {
 
 // ✅ Helper: Set active group
 async function setUserActiveGroup(token, groupCode) {
-  await firestore.collection("user_preferences").doc(token).set({
-    active_group: groupCode,
-    last_updated: new Date().toISOString()
-  }, { merge: true });
+  try {
+    await firestore.collection("user_preferences").doc(token).set({
+      active_group: groupCode,
+      last_updated: new Date().toISOString()
+    }, { merge: true });
+    console.log(`✓ Active group set for ${token.substring(0, 8)}...: ${groupCode}`);
+    return true;
+  } catch (err) {
+    console.error("Error setting active group:", err);
+    throw err;
+  }
 }
 
 // ✅ Helper: Get active group
 async function getUserActiveGroup(token) {
-  const prefDoc = await firestore.collection("user_preferences").doc(token).get();
-  return prefDoc.exists ? prefDoc.data().active_group || null : null;
+  try {
+    const prefDoc = await firestore.collection("user_preferences").doc(token).get();
+    if (prefDoc.exists) {
+      const data = prefDoc.data();
+      return data.active_group || null;
+    }
+    return null;
+  } catch (err) {
+    console.error("Error getting active group:", err);
+    return null;
+  }
 }
 
 // ✅ Create group
@@ -98,19 +114,27 @@ app.post("/join-group", async (req, res) => {
   }
 });
 
-// ✅ Get user's groups with active status
+// ✅ Get user's groups with active status (WITH AUTO-INITIALIZATION)
 app.post("/my-groups", async (req, res) => {
   try {
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: "token required" });
 
-    const activeGroup = await getUserActiveGroup(token);
+    console.log(`📱 Loading groups for ${token.substring(0, 8)}...`);
+    
+    // Get current active group
+    let activeGroup = await getUserActiveGroup(token);
+    console.log(`   Current active group: ${activeGroup || "none"}`);
+    
+    // Get all groups user is in
     const groupsSnapshot = await firestore.collection("groups").get();
     const userGroups = [];
+    const userGroupCodes = [];
 
     groupsSnapshot.forEach(doc => {
       const groupData = doc.data();
       if (groupData.members && groupData.members[token]) {
+        userGroupCodes.push(doc.id);
         userGroups.push({
           groupCode: doc.id,
           groupName: groupData.name,
@@ -120,8 +144,27 @@ app.post("/my-groups", async (req, res) => {
       }
     });
 
-    res.json({ success: true, groups: userGroups, active_group: activeGroup });
+    console.log(`   Found ${userGroups.length} groups for user`);
+    
+    // AUTO-INITIALIZATION: If user has groups but no active group, set first one as active
+    if (userGroups.length > 0 && !activeGroup) {
+      activeGroup = userGroupCodes[0];
+      await setUserActiveGroup(token, activeGroup);
+      console.log(`   🔄 Auto-set active group to: ${activeGroup}`);
+      
+      // Update is_active flag in response
+      userGroups.forEach(group => {
+        group.is_active = (group.groupCode === activeGroup);
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      groups: userGroups,
+      active_group: activeGroup
+    });
   } catch (err) {
+    console.error("Get groups error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -167,6 +210,10 @@ app.post("/get-active-group", async (req, res) => {
     const groupDoc = await groupRef.get();
     
     if (!groupDoc.exists) {
+      // Active group doesn't exist anymore
+      await firestore.collection("user_preferences").doc(token).update({
+        active_group: null
+      });
       return res.json({ success: true, has_active_group: false });
     }
 
@@ -202,6 +249,13 @@ app.post("/knock-attempt", async (req, res) => {
     
     if (!members[senderToken]) {
       return res.status(403).json({ error: "Not a member" });
+    }
+
+    // Verify this is sender's active group
+    const activeGroup = await getUserActiveGroup(senderToken);
+    if (activeGroup !== cleanGroupCode) {
+      console.log(`⚠️  ${senderToken.substring(0, 8)}... knocking from non-active group`);
+      // Still allow, but log it
     }
 
     const knockId = Date.now().toString();
@@ -240,6 +294,8 @@ app.post("/knock-attempt", async (req, res) => {
 
     await Promise.all(messages.map(msg => admin.messaging().send(msg)));
     
+    console.log(`📤 Knock from ${senderToken.substring(0, 8)}... to ${receiverTokens.length} receivers`);
+    
     res.json({ 
       success: true, 
       message: `Checking ${receiverTokens.length} person(s)...`,
@@ -248,6 +304,7 @@ app.post("/knock-attempt", async (req, res) => {
     });
 
   } catch (err) {
+    console.error("Knock attempt error:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -276,6 +333,8 @@ app.post("/report-ip", async (req, res) => {
     pendingData.receiversReported.add(token);
     const isSameNetwork = (receiverIp === pendingData.senderIp);
     
+    console.log(`📱 ${token.substring(0, 8)}... IP: ${receiverIp}, Match: ${isSameNetwork}`);
+    
     setTimeout(async () => {
       if (isSameNetwork && pendingKnocks.has(knockId)) {
         const message = {
@@ -288,11 +347,13 @@ app.post("/report-ip", async (req, res) => {
           android: { priority: "high" }
         };
         await admin.messaging().send(message);
+        console.log(`✅ Actual knock sent to ${token.substring(0, 8)}...`);
       }
     }, 4000);
 
     res.json({ success: true, isSameNetwork: isSameNetwork });
   } catch (err) {
+    console.error("Report IP error:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -300,4 +361,6 @@ app.post("/report-ip", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚪 WiFi Knock Knock Server on port ${PORT}`);
+  console.log(`📊 Active group tracking: ENABLED`);
+  console.log(`🔧 user_preferences collection will auto-create`);
 });
