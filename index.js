@@ -15,6 +15,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Temporary storage for knock attempts (in-memory, reset on server restart)
+const pendingKnocks = new Map();
+
 // ✅ Get consistent public IP address
 function getCompletePublicIp(req) {
   let ip = req.headers['x-forwarded-for'];
@@ -39,7 +42,7 @@ app.get("/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// ✅ Create group with IP
+// ✅ Create group
 app.post("/create-group", async (req, res) => {
   try {
     const { token, groupName } = req.body;
@@ -55,18 +58,12 @@ app.post("/create-group", async (req, res) => {
       members: { 
         [token]: { 
           joinedAt: Date.now(),
-          publicIp: userIp,
-          last_ip_update: new Date().toISOString()
+          last_active: new Date().toISOString()
         } 
       }
     });
 
-    await firestore.collection("device_status").doc(token).set({
-      public_ip: userIp,
-      last_updated: new Date().toISOString()
-    }, { merge: true });
-
-    console.log(`Group created: ${groupName} (${groupCode}) by IP: ${userIp}`);
+    console.log(`Group created: ${groupName} (${groupCode})`);
     res.json({ success: true, groupCode, groupName });
   } catch (err) {
     console.error("Create group error:", err);
@@ -74,7 +71,7 @@ app.post("/create-group", async (req, res) => {
   }
 });
 
-// ✅ Join group with IP
+// ✅ Join group
 app.post("/join-group", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
@@ -85,20 +82,12 @@ app.post("/join-group", async (req, res) => {
     
     if (!groupDoc.exists) return res.status(404).json({ error: "Group not found" });
 
-    const userIp = getCompletePublicIp(req);
-    
     await groupRef.update({
       [`members.${token}`]: { 
         joinedAt: Date.now(),
-        publicIp: userIp,
-        last_ip_update: new Date().toISOString()
+        last_active: new Date().toISOString()
       }
     });
-
-    await firestore.collection("device_status").doc(token).set({
-      public_ip: userIp,
-      last_updated: new Date().toISOString()
-    }, { merge: true });
 
     const groupData = groupDoc.data();
     res.json({ success: true, groupName: groupData.name, groupCode });
@@ -108,49 +97,8 @@ app.post("/join-group", async (req, res) => {
   }
 });
 
-// ✅ Update IP - ALWAYS update with whatever IP the device has (WiFi or Mobile)
-app.post("/update-ip", async (req, res) => {
-  try {
-    const { token } = req.body;
-    if (!token) return res.status(400).json({ error: "token required" });
-
-    const publicIp = getCompletePublicIp(req);
-    
-    // ALWAYS update with the current IP (could be WiFi, mobile, etc.)
-    await firestore.collection("device_status").doc(token).set({
-      public_ip: publicIp,
-      last_updated: new Date().toISOString()
-    }, { merge: true });
-
-    // Update in all groups this user belongs to
-    const groupsSnapshot = await firestore.collection("groups").get();
-    const updatePromises = [];
-
-    groupsSnapshot.forEach(doc => {
-      const groupData = doc.data();
-      if (groupData.members && groupData.members[token]) {
-        const groupRef = firestore.collection("groups").doc(doc.id);
-        updatePromises.push(
-          groupRef.update({
-            [`members.${token}.publicIp`]: publicIp,
-            [`members.${token}.last_ip_update`]: new Date().toISOString()
-          })
-        );
-      }
-    });
-
-    await Promise.all(updatePromises);
-    
-    console.log(`📱 ${token.substring(0, 8)}... IP updated: ${publicIp}`);
-    res.json({ success: true, public_ip: publicIp });
-  } catch (err) {
-    console.error("Update IP error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ✅ SIMPLE KNOCK: Compare IPs directly (no "n/a" checks needed)
-app.post("/knock", async (req, res) => {
+// ✅ STEP 1: Knock Attempt - Sender initiates knock
+app.post("/knock-attempt", async (req, res) => {
   try {
     const { senderToken, groupCode } = req.body;
     if (!senderToken || !groupCode) {
@@ -173,72 +121,167 @@ app.post("/knock", async (req, res) => {
       return res.status(403).json({ error: "You are not a member of this group" });
     }
 
-    const tokensToKnock = [];
+    // Store knock attempt data
+    const knockId = Date.now().toString() + Math.random().toString(36).substring(2, 9);
+    const pendingData = {
+      knockId,
+      senderToken,
+      senderIp,
+      groupCode: groupCode.toUpperCase(),
+      timestamp: Date.now(),
+      receiversReported: new Set() // Track which receivers have reported IP
+    };
     
-    // Check each member
+    pendingKnocks.set(knockId, pendingData);
+    
+    // Set timeout to clean up after 30 seconds
+    setTimeout(() => {
+      if (pendingKnocks.has(knockId)) {
+        console.log(`🧹 Cleaning up expired knock attempt: ${knockId}`);
+        pendingKnocks.delete(knockId);
+      }
+    }, 30000);
+
+    // Send first notification to all other group members
+    const promises = [];
+    const receiverTokens = [];
+    
     for (const [memberToken, memberData] of Object.entries(members)) {
       if (memberToken !== senderToken) {
-        const memberIp = memberData.publicIp || "unknown";
+        receiverTokens.push(memberToken);
         
-        // SIMPLE CHECK: Compare IPs directly
-        if (memberIp === senderIp) {
-          tokensToKnock.push(memberToken);
-          console.log(`✅ ${memberToken.substring(0, 8)}... will receive knock (IP match: ${memberIp})`);
-        } else {
-          console.log(`⚠️  ${memberToken.substring(0, 8)}... IP mismatch: ${memberIp} vs ${senderIp}`);
-        }
+        const message = {
+          token: memberToken,
+          data: {
+            title: "🔍 Knock Attempt",
+            body: "Someone is checking if you're home...",
+            type: "knock-attempt",
+            knockId: knockId,
+            senderToken: senderToken,
+            timestamp: Date.now().toString()
+          },
+          android: {
+            priority: "high"
+          },
+          apns: {
+            payload: {
+              aps: {
+                contentAvailable: true,
+                alert: {
+                  title: "🔍 Knock Attempt",
+                  body: "Someone is checking if you're home..."
+                },
+                sound: "default"
+              }
+            }
+          }
+        };
+        promises.push(admin.messaging().send(message));
       }
     }
 
-    if (tokensToKnock.length === 0) {
-      console.log(`❌ No one home at IP: ${senderIp}`);
+    if (receiverTokens.length === 0) {
+      pendingKnocks.delete(knockId);
       return res.status(400).json({ 
         success: false,
-        error: "No one home"
+        error: "No one else in the group"
       });
     }
 
-    const promises = tokensToKnock.map(receiverToken => {
-      // Data payload that triggers onMessageReceived in Android
-      const message = {
-        token: receiverToken,
-        data: {
-          title: "🔔 Door Knock!",
-          body: "Someone is at your door!",
-          type: "knock",
-          timestamp: Date.now().toString()
-        },
-        android: {
-          priority: "high"
-        },
-        apns: {
-          payload: {
-            aps: {
-              contentAvailable: true,
-              alert: {
-                title: "🔔 Door Knock!",
-                body: "Someone is at your door!"
-              },
-              sound: "default"
-            }
-          }
-        }
-      };
-      return admin.messaging().send(message);
-    });
-
     await Promise.all(promises);
     
-    console.log(`📤 Knock sent to ${tokensToKnock.length} device(s) at IP: ${senderIp}`);
+    console.log(`📤 Knock attempt ${knockId} sent to ${receiverTokens.length} receiver(s)`);
+    console.log(`   Sender IP: ${senderIp}, Group: ${groupCode}`);
     
     res.json({ 
       success: true, 
-      message: `Knock delivered to ${tokensToKnock.length} person(s) at home`,
-      count: tokensToKnock.length
+      message: `Checking ${receiverTokens.length} person(s) on this WiFi...`,
+      knockId: knockId,
+      count: receiverTokens.length
     });
 
   } catch (err) {
-    console.error("Knock error:", err);
+    console.error("Knock attempt error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ✅ STEP 2: Report IP - Receiver reports current IP when they get knock-attempt
+app.post("/report-ip", async (req, res) => {
+  try {
+    const { token, knockId } = req.body;
+    if (!token || !knockId) {
+      return res.status(400).json({ error: "token and knockId required" });
+    }
+
+    const receiverIp = getCompletePublicIp(req);
+    
+    // Find the pending knock attempt
+    const pendingData = pendingKnocks.get(knockId);
+    if (!pendingData) {
+      return res.status(404).json({ error: "Knock attempt not found or expired" });
+    }
+
+    // Store receiver's IP
+    pendingData.receiversReported.add(token);
+    
+    console.log(`📱 Receiver ${token.substring(0, 8)}... reported IP: ${receiverIp} for knock ${knockId}`);
+    
+    // Check if IPs match (same WiFi network)
+    const isSameNetwork = (receiverIp === pendingData.senderIp);
+    
+    // Schedule the second notification in 2 seconds
+    setTimeout(async () => {
+      try {
+        if (isSameNetwork) {
+          // IPs match - send actual knock notification
+          const message = {
+            token: token,
+            data: {
+              title: "🚪 Door Knock!",
+              body: "Someone is at your door!",
+              type: "actual-knock",
+              knockId: knockId,
+              timestamp: Date.now().toString()
+            },
+            android: {
+              priority: "high"
+            },
+            apns: {
+              payload: {
+                aps: {
+                  contentAvailable: true,
+                  alert: {
+                    title: "🚪 Door Knock!",
+                    body: "Someone is at your door!"
+                  },
+                  sound: "default"
+                }
+              }
+            }
+          };
+          
+          await admin.messaging().send(message);
+          console.log(`✅ Actual knock sent to ${token.substring(0, 8)}... (IP match: ${receiverIp})`);
+        } else {
+          console.log(`❌ IP mismatch for ${token.substring(0, 8)}...: ${receiverIp} vs ${pendingData.senderIp}`);
+          // No second notification sent - they're not on the same WiFi
+        }
+      } catch (error) {
+        console.error("Error sending second notification:", error);
+      }
+    }, 2000); // 2 second delay (reduced from 5 for better UX)
+
+    res.json({ 
+      success: true, 
+      message: "IP reported successfully",
+      isSameNetwork: isSameNetwork,
+      receiverIp: receiverIp,
+      senderIp: pendingData.senderIp
+    });
+
+  } catch (err) {
+    console.error("Report IP error:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -258,8 +301,7 @@ app.post("/my-groups", async (req, res) => {
         userGroups.push({
           groupCode: doc.id,
           groupName: groupData.name,
-          memberCount: Object.keys(groupData.members).length,
-          yourIp: groupData.members[token].publicIp || "unknown"
+          memberCount: Object.keys(groupData.members).length
         });
       }
     });
@@ -271,10 +313,40 @@ app.post("/my-groups", async (req, res) => {
   }
 });
 
-// ✅ REMOVED: /set-offline endpoint (not needed anymore)
+// ✅ Cleanup endpoint (optional, for debugging)
+app.get("/cleanup-pending", (req, res) => {
+  const before = pendingKnocks.size;
+  pendingKnocks.clear();
+  res.json({ 
+    success: true, 
+    message: `Cleaned up ${before} pending knocks`,
+    remaining: pendingKnocks.size 
+  });
+});
+
+// ✅ Status endpoint (for debugging)
+app.get("/pending-status", (req, res) => {
+  const pendingList = Array.from(pendingKnocks.entries()).map(([id, data]) => ({
+    knockId: id,
+    senderToken: data.senderToken.substring(0, 8) + '...',
+    senderIp: data.senderIp,
+    groupCode: data.groupCode,
+    timestamp: new Date(data.timestamp).toISOString(),
+    receiversReported: Array.from(data.receiversReported).map(t => t.substring(0, 8) + '...')
+  }));
+  
+  res.json({
+    success: true,
+    pendingCount: pendingKnocks.size,
+    pendingKnocks: pendingList
+  });
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚪 Knock Knock server running on port ${PORT}`);
-  console.log(`🔧 Simplified: Always storing actual IPs, no "n/a" logic`);
+  console.log(`🚪 WiFi Knock Knock Server running on port ${PORT}`);
+  console.log(`🎯 Two-step knock system active:`);
+  console.log(`   1. Knock attempt → "Checking if you're home..."`);
+  console.log(`   2. IP report → 2s delay → Actual knock if same WiFi`);
+  console.log(`   🔥 No more automatic network monitoring!`);
 });
