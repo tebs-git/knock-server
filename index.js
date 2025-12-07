@@ -49,7 +49,6 @@ app.post("/create-group", async (req, res) => {
     if (!token || !groupName) return res.status(400).json({ error: "token and groupName required" });
 
     const groupCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const userIp = getCompletePublicIp(req);
     
     await firestore.collection("groups").doc(groupCode).set({
       name: groupName,
@@ -191,7 +190,8 @@ app.post("/knock-attempt", async (req, res) => {
     await Promise.all(promises);
     
     console.log(`📤 Knock attempt ${knockId} sent to ${receiverTokens.length} receiver(s)`);
-    console.log(`   Sender IP: ${senderIp}, Group: ${groupCode}`);
+    console.log(`   Sender: ${senderToken.substring(0, 8)}..., Group: ${groupCode}, IP: ${senderIp}`);
+    console.log(`   Receivers: ${receiverTokens.map(t => t.substring(0, 8) + '...').join(', ')}`);
     
     res.json({ 
       success: true, 
@@ -222,19 +222,38 @@ app.post("/report-ip", async (req, res) => {
       return res.status(404).json({ error: "Knock attempt not found or expired" });
     }
 
+    // ✅ CRITICAL: Check if receiver is in the same group as sender
+    const groupRef = firestore.collection("groups").doc(pendingData.groupCode);
+    const groupDoc = await groupRef.get();
+    
+    if (!groupDoc.exists) {
+      console.log(`❌ Group ${pendingData.groupCode} no longer exists for knock ${knockId}`);
+      return res.status(404).json({ error: "Group not found" });
+    }
+
+    const groupData = groupDoc.data();
+    const members = groupData.members || {};
+    
+    // Check if receiver is actually a member of this group
+    if (!members[token]) {
+      console.log(`❌ Receiver ${token.substring(0, 8)}... is NOT a member of group ${pendingData.groupCode}`);
+      return res.status(403).json({ error: "You are not a member of this group" });
+    }
+
     // Store receiver's IP
     pendingData.receiversReported.add(token);
     
     console.log(`📱 Receiver ${token.substring(0, 8)}... reported IP: ${receiverIp} for knock ${knockId}`);
+    console.log(`   Group: ${pendingData.groupCode}, Sender IP: ${pendingData.senderIp}`);
     
     // Check if IPs match (same WiFi network)
     const isSameNetwork = (receiverIp === pendingData.senderIp);
     
-    // Schedule the second notification in 2 seconds
+    // Schedule the second notification in 4 seconds
     setTimeout(async () => {
       try {
         if (isSameNetwork) {
-          // IPs match - send actual knock notification
+          // ✅ IPs match AND receiver is in the same group - send actual knock notification
           const message = {
             token: token,
             data: {
@@ -262,22 +281,28 @@ app.post("/report-ip", async (req, res) => {
           };
           
           await admin.messaging().send(message);
-          console.log(`✅ Actual knock sent to ${token.substring(0, 8)}... (IP match: ${receiverIp})`);
+          console.log(`✅ Actual knock sent to ${token.substring(0, 8)}...`);
+          console.log(`   ✓ IP match: ${receiverIp} === ${pendingData.senderIp}`);
+          console.log(`   ✓ Group verified: ${pendingData.groupCode}`);
         } else {
-          console.log(`❌ IP mismatch for ${token.substring(0, 8)}...: ${receiverIp} vs ${pendingData.senderIp}`);
+          console.log(`❌ IP mismatch for ${token.substring(0, 8)}...`);
+          console.log(`   Receiver IP: ${receiverIp}`);
+          console.log(`   Sender IP: ${pendingData.senderIp}`);
+          console.log(`   Not on same WiFi - no knock sent`);
           // No second notification sent - they're not on the same WiFi
         }
       } catch (error) {
         console.error("Error sending second notification:", error);
       }
-    }, 4000); // 4 second delay 
+    }, 4000); // 4 second delay
 
     res.json({ 
       success: true, 
       message: "IP reported successfully",
       isSameNetwork: isSameNetwork,
       receiverIp: receiverIp,
-      senderIp: pendingData.senderIp
+      senderIp: pendingData.senderIp,
+      groupVerified: true
     });
 
   } catch (err) {
@@ -347,7 +372,6 @@ app.listen(PORT, () => {
   console.log(`🚪 WiFi Knock Knock Server running on port ${PORT}`);
   console.log(`🎯 Two-step knock system active:`);
   console.log(`   1. Knock attempt → "Checking if you're home..."`);
-  console.log(`   2. IP report → 2s delay → Actual knock if same WiFi`);
-  console.log(`   🔥 No more automatic network monitoring!`);
+  console.log(`   2. IP report → 4s delay → Actual knock if same WiFi AND same group`);
+  console.log(`   🔒 Security: Requires BOTH same group membership AND same IP`);
 });
-
