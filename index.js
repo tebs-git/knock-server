@@ -270,7 +270,7 @@ app.post("/report-ip", async (req, res) => {
       } catch (error) {
         console.error("Error sending second notification:", error);
       }
-    }, 2000); // 2 second delay (reduced from 5 for better UX)
+    }, 4000); // 4 second delay 
 
     res.json({ 
       success: true, 
@@ -350,3 +350,4 @@ app.listen(PORT, () => {
   console.log(`   2. IP report → 2s delay → Actual knock if same WiFi`);
   console.log(`   🔥 No more automatic network monitoring!`);
 });
+
