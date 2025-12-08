@@ -349,7 +349,7 @@ app.post("/report-ip", async (req, res) => {
         await admin.messaging().send(message);
         console.log(`✅ Actual knock sent to ${token.substring(0, 8)}...`);
       }
-    }, 4000);
+    }, 3000);
 
     res.json({ success: true, isSameNetwork: isSameNetwork });
   } catch (err) {
@@ -364,3 +364,4 @@ app.listen(PORT, () => {
   console.log(`📊 Active group tracking: ENABLED`);
   console.log(`🔧 user_preferences collection will auto-create`);
 });
+
