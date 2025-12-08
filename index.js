@@ -272,7 +272,7 @@ app.post("/knock-attempt", async (req, res) => {
     
     setTimeout(() => {
       pendingKnocks.delete(knockId);
-    }, 30000);
+    }, 20000);
 
     const receiverTokens = Object.keys(members).filter(t => t !== senderToken);
     
@@ -364,4 +364,5 @@ app.listen(PORT, () => {
   console.log(`📊 Active group tracking: ENABLED`);
   console.log(`🔧 user_preferences collection will auto-create`);
 });
+
 
