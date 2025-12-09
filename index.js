@@ -326,26 +326,23 @@ app.post("/report-ip", async (req, res) => {
     console.log(`📱 ${token.substring(0, 8)}... IP: ${receiverIp}, Match: ${isSameNetwork}`);
     
     setTimeout(async () => {
-      if (isSameNetwork && pendingKnocks.has(knockId)) {
+    if (isSameNetwork && pendingKnocks.has(knockId)) {
         const message = {
-          token: token,
-          data: {
-            title: "🚪 Door Knock!",
-            body: "Someone is at your door!",
-            type: "actual-knock"
-          },
-          android: { 
-            priority: "high",
-            notification: {
-              sound: "default",  // SOUND for actual knock
-              defaultSound: true
+            token: token,
+            data: {
+                title: "🚪 Door Knock!",
+                body: "Someone is at your door!",
+                type: "actual-knock"
+            },
+            android: { 
+                priority: "high"
+                // REMOVE sound settings - we'll play custom sound in app
             }
-          }
         };
         await admin.messaging().send(message);
-        console.log(`✅ Actual knock (with sound) sent to ${token.substring(0, 8)}...`);
-      }
-    }, 3000);
+        console.log(`✅ Actual knock sent to ${token.substring(0, 8)}...`);
+     }
+  }, 3000);
 
     res.json({ success: true, isSameNetwork: isSameNetwork });
   } catch (err) {
@@ -360,3 +357,4 @@ app.listen(PORT, () => {
   console.log(`📊 Active group tracking: ENABLED`);
   console.log(`🎯 Knock-attempt: SILENT, Actual-knock: WITH SOUND`);
 });
+
