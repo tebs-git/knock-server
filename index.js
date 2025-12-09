@@ -17,7 +17,6 @@ app.use(express.json());
 
 const pendingKnocks = new Map();
 
-// ✅ Get IP from request
 function getCompletePublicIp(req) {
   let ip = req.headers['x-forwarded-for'];
   if (ip) {
@@ -29,12 +28,10 @@ function getCompletePublicIp(req) {
   return ip.replace(/^::ffff:/, '');
 }
 
-// ✅ Health check (essential for Render)
 app.get("/health", (req, res) => {
   res.json({ status: "OK" });
 });
 
-// ✅ Helper: Set active group
 async function setUserActiveGroup(token, groupCode) {
   try {
     await firestore.collection("user_preferences").doc(token).set({
@@ -49,7 +46,6 @@ async function setUserActiveGroup(token, groupCode) {
   }
 }
 
-// ✅ Helper: Get active group
 async function getUserActiveGroup(token) {
   try {
     const prefDoc = await firestore.collection("user_preferences").doc(token).get();
@@ -64,7 +60,6 @@ async function getUserActiveGroup(token) {
   }
 }
 
-// ✅ Create group
 app.post("/create-group", async (req, res) => {
   try {
     const { token, groupName } = req.body;
@@ -89,7 +84,6 @@ app.post("/create-group", async (req, res) => {
   }
 });
 
-// ✅ Join group
 app.post("/join-group", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
@@ -114,7 +108,6 @@ app.post("/join-group", async (req, res) => {
   }
 });
 
-// ✅ Get user's groups with active status (WITH AUTO-INITIALIZATION)
 app.post("/my-groups", async (req, res) => {
   try {
     const { token } = req.body;
@@ -122,11 +115,9 @@ app.post("/my-groups", async (req, res) => {
 
     console.log(`📱 Loading groups for ${token.substring(0, 8)}...`);
     
-    // Get current active group
     let activeGroup = await getUserActiveGroup(token);
     console.log(`   Current active group: ${activeGroup || "none"}`);
     
-    // Get all groups user is in
     const groupsSnapshot = await firestore.collection("groups").get();
     const userGroups = [];
     const userGroupCodes = [];
@@ -146,13 +137,11 @@ app.post("/my-groups", async (req, res) => {
 
     console.log(`   Found ${userGroups.length} groups for user`);
     
-    // AUTO-INITIALIZATION: If user has groups but no active group, set first one as active
     if (userGroups.length > 0 && !activeGroup) {
       activeGroup = userGroupCodes[0];
       await setUserActiveGroup(token, activeGroup);
       console.log(`   🔄 Auto-set active group to: ${activeGroup}`);
       
-      // Update is_active flag in response
       userGroups.forEach(group => {
         group.is_active = (group.groupCode === activeGroup);
       });
@@ -169,7 +158,6 @@ app.post("/my-groups", async (req, res) => {
   }
 });
 
-// ✅ Set active group
 app.post("/set-active-group", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
@@ -194,7 +182,6 @@ app.post("/set-active-group", async (req, res) => {
   }
 });
 
-// ✅ Get active group only
 app.post("/get-active-group", async (req, res) => {
   try {
     const { token } = req.body;
@@ -210,7 +197,6 @@ app.post("/get-active-group", async (req, res) => {
     const groupDoc = await groupRef.get();
     
     if (!groupDoc.exists) {
-      // Active group doesn't exist anymore
       await firestore.collection("user_preferences").doc(token).update({
         active_group: null
       });
@@ -229,7 +215,7 @@ app.post("/get-active-group", async (req, res) => {
   }
 });
 
-// ✅ Knock attempt
+// ✅ Knock attempt - SILENT notification (no sound)
 app.post("/knock-attempt", async (req, res) => {
   try {
     const { senderToken, groupCode } = req.body;
@@ -251,11 +237,9 @@ app.post("/knock-attempt", async (req, res) => {
       return res.status(403).json({ error: "Not a member" });
     }
 
-    // Verify this is sender's active group
     const activeGroup = await getUserActiveGroup(senderToken);
     if (activeGroup !== cleanGroupCode) {
       console.log(`⚠️  ${senderToken.substring(0, 8)}... knocking from non-active group`);
-      // Still allow, but log it
     }
 
     const knockId = Date.now().toString();
@@ -289,12 +273,18 @@ app.post("/knock-attempt", async (req, res) => {
         knockId: knockId,
         senderToken: senderToken
       },
-      android: { priority: "high" }
+      android: { 
+        priority: "high",
+        notification: {
+          sound: null,  // NO SOUND for knock-attempt
+          defaultSound: false
+        }
+      }
     }));
 
     await Promise.all(messages.map(msg => admin.messaging().send(msg)));
     
-    console.log(`📤 Knock from ${senderToken.substring(0, 8)}... to ${receiverTokens.length} receivers`);
+    console.log(`📤 Silent knock attempt from ${senderToken.substring(0, 8)}... to ${receiverTokens.length} receivers`);
     
     res.json({ 
       success: true, 
@@ -344,10 +334,16 @@ app.post("/report-ip", async (req, res) => {
             body: "Someone is at your door!",
             type: "actual-knock"
           },
-          android: { priority: "high" }
+          android: { 
+            priority: "high",
+            notification: {
+              sound: "default",  // SOUND for actual knock
+              defaultSound: true
+            }
+          }
         };
         await admin.messaging().send(message);
-        console.log(`✅ Actual knock sent to ${token.substring(0, 8)}...`);
+        console.log(`✅ Actual knock (with sound) sent to ${token.substring(0, 8)}...`);
       }
     }, 3000);
 
@@ -362,9 +358,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚪 WiFi Knock Knock Server on port ${PORT}`);
   console.log(`📊 Active group tracking: ENABLED`);
-  console.log(`🔧 user_preferences collection will auto-create`);
+  console.log(`🎯 Knock-attempt: SILENT, Actual-knock: WITH SOUND`);
 });
-
-
-
-
