@@ -17,6 +17,7 @@ app.use(express.json());
 
 const pendingKnocks = new Map();
 
+// ✅ Get IP from request
 function getCompletePublicIp(req) {
   let ip = req.headers['x-forwarded-for'];
   if (ip) {
@@ -28,10 +29,12 @@ function getCompletePublicIp(req) {
   return ip.replace(/^::ffff:/, '');
 }
 
+// ✅ Health check (essential for Render)
 app.get("/health", (req, res) => {
   res.json({ status: "OK" });
 });
 
+// ✅ Helper: Set active group
 async function setUserActiveGroup(token, groupCode) {
   try {
     await firestore.collection("user_preferences").doc(token).set({
@@ -46,6 +49,7 @@ async function setUserActiveGroup(token, groupCode) {
   }
 }
 
+// ✅ Helper: Get active group
 async function getUserActiveGroup(token) {
   try {
     const prefDoc = await firestore.collection("user_preferences").doc(token).get();
@@ -60,6 +64,7 @@ async function getUserActiveGroup(token) {
   }
 }
 
+// ✅ Create group
 app.post("/create-group", async (req, res) => {
   try {
     const { token, groupName } = req.body;
@@ -84,6 +89,7 @@ app.post("/create-group", async (req, res) => {
   }
 });
 
+// ✅ Join group
 app.post("/join-group", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
@@ -108,6 +114,7 @@ app.post("/join-group", async (req, res) => {
   }
 });
 
+// ✅ Get user's groups with active status (WITH AUTO-INITIALIZATION)
 app.post("/my-groups", async (req, res) => {
   try {
     const { token } = req.body;
@@ -158,6 +165,7 @@ app.post("/my-groups", async (req, res) => {
   }
 });
 
+// ✅ Set active group
 app.post("/set-active-group", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
@@ -182,6 +190,7 @@ app.post("/set-active-group", async (req, res) => {
   }
 });
 
+// ✅ Get active group only
 app.post("/get-active-group", async (req, res) => {
   try {
     const { token } = req.body;
@@ -215,7 +224,7 @@ app.post("/get-active-group", async (req, res) => {
   }
 });
 
-// ✅ Knock attempt - SILENT notification (no sound)
+// ✅ Knock attempt (SILENT NOTIFICATION - no sound)
 app.post("/knock-attempt", async (req, res) => {
   try {
     const { senderToken, groupCode } = req.body;
@@ -225,6 +234,15 @@ app.post("/knock-attempt", async (req, res) => {
 
     const senderIp = getCompletePublicIp(req);
     const cleanGroupCode = groupCode.toUpperCase();
+    
+    // 📱 LOG THE SENDER'S IP TO CONSOLE
+    console.log(`📱 SENDER IP DETECTED 📱`);
+    console.log(`   Device Token: ${senderToken.substring(0, 8)}...`);
+    console.log(`   Sender IP: ${senderIp}`);
+    console.log(`   Group: ${cleanGroupCode}`);
+    console.log(`   Timestamp: ${new Date().toISOString()}`);
+    console.log(`📱 END SENDER LOG 📱\n`);
+    
     const groupRef = firestore.collection("groups").doc(cleanGroupCode);
     const groupDoc = await groupRef.get();
     
@@ -299,7 +317,7 @@ app.post("/knock-attempt", async (req, res) => {
   }
 });
 
-// ✅ Report IP
+// ✅ Report IP (with detailed logging)
 app.post("/report-ip", async (req, res) => {
   try {
     const { token, knockId } = req.body;
@@ -323,26 +341,34 @@ app.post("/report-ip", async (req, res) => {
     pendingData.receiversReported.add(token);
     const isSameNetwork = (receiverIp === pendingData.senderIp);
     
-    console.log(`📱 ${token.substring(0, 8)}... IP: ${receiverIp}, Match: ${isSameNetwork}`);
+    // 📱 LOG THE RECEIVER'S IP TO CONSOLE
+    console.log(`📱 RECEIVER IP DETECTED 📱`);
+    console.log(`   Device Token: ${token.substring(0, 8)}...`);
+    console.log(`   Receiver IP: ${receiverIp}`);
+    console.log(`   Knock ID: ${knockId}`);
+    console.log(`   Group: ${pendingData.groupCode}`);
+    console.log(`   Sender IP: ${pendingData.senderIp}`);
+    console.log(`   Same Network as Sender? ${isSameNetwork ? '✅ YES' : '❌ NO'}`);
+    console.log(`   Timestamp: ${new Date().toISOString()}`);
+    console.log(`📱 END IP REPORT 📱\n`);
     
     setTimeout(async () => {
-    if (isSameNetwork && pendingKnocks.has(knockId)) {
+      if (isSameNetwork && pendingKnocks.has(knockId)) {
         const message = {
-            token: token,
-            data: {
-                title: "🚪 Door Knock!",
-                body: "Someone is at your door!",
-                type: "actual-knock"
-            },
-            android: { 
-                priority: "high"
-                // REMOVE sound settings - we'll play custom sound in app
-            }
+          token: token,
+          data: {
+            title: "🚪 Door Knock!",
+            body: "Someone is at your door!",
+            type: "actual-knock"
+          },
+          android: { 
+            priority: "high"
+          }
         };
         await admin.messaging().send(message);
         console.log(`✅ Actual knock sent to ${token.substring(0, 8)}...`);
-     }
-  }, 3000);
+      }
+    }, 3000);
 
     res.json({ success: true, isSameNetwork: isSameNetwork });
   } catch (err) {
@@ -356,5 +382,5 @@ app.listen(PORT, () => {
   console.log(`🚪 WiFi Knock Knock Server on port ${PORT}`);
   console.log(`📊 Active group tracking: ENABLED`);
   console.log(`🎯 Knock-attempt: SILENT, Actual-knock: WITH SOUND`);
+  console.log(`📡 IP logging: ENABLED for both sender and receiver`);
 });
-
