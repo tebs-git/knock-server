@@ -17,7 +17,6 @@ app.use(express.json());
 
 const pendingKnocks = new Map();
 
-// ✅ Get IP from request (still needed for comparison, just not logged)
 function getCompletePublicIp(req) {
   let ip = req.headers['x-forwarded-for'];
   if (ip) {
@@ -29,12 +28,10 @@ function getCompletePublicIp(req) {
   return ip.replace(/^::ffff:/, '');
 }
 
-// ✅ Health check
 app.get("/health", (req, res) => {
   res.json({ status: "OK" });
 });
 
-// ✅ Helper: Set active group
 async function setUserActiveGroup(token, groupCode) {
   try {
     await firestore.collection("user_preferences").doc(token).set({
@@ -48,7 +45,6 @@ async function setUserActiveGroup(token, groupCode) {
   }
 }
 
-// ✅ Helper: Get active group
 async function getUserActiveGroup(token) {
   try {
     const prefDoc = await firestore.collection("user_preferences").doc(token).get();
@@ -63,7 +59,6 @@ async function getUserActiveGroup(token) {
   }
 }
 
-// ✅ Create group
 app.post("/create-group", async (req, res) => {
   try {
     const { token, groupName } = req.body;
@@ -88,7 +83,6 @@ app.post("/create-group", async (req, res) => {
   }
 });
 
-// ✅ Join group
 app.post("/join-group", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
@@ -113,7 +107,6 @@ app.post("/join-group", async (req, res) => {
   }
 });
 
-// ✅ Get user's groups
 app.post("/my-groups", async (req, res) => {
   try {
     const { token } = req.body;
@@ -158,7 +151,6 @@ app.post("/my-groups", async (req, res) => {
   }
 });
 
-// ✅ Set active group
 app.post("/set-active-group", async (req, res) => {
   try {
     const { token, groupCode } = req.body;
@@ -183,7 +175,6 @@ app.post("/set-active-group", async (req, res) => {
   }
 });
 
-// ✅ Get active group only
 app.post("/get-active-group", async (req, res) => {
   try {
     const { token } = req.body;
@@ -217,7 +208,6 @@ app.post("/get-active-group", async (req, res) => {
   }
 });
 
-// ✅ Knock attempt
 app.post("/knock-attempt", async (req, res) => {
   try {
     const { senderToken, groupCode } = req.body;
@@ -241,7 +231,7 @@ app.post("/knock-attempt", async (req, res) => {
 
     const activeGroup = await getUserActiveGroup(senderToken);
     if (activeGroup !== cleanGroupCode) {
-      console.log(`⚠️  ${senderToken.substring(0, 8)}... knocking from non-active group`);
+      console.log(`Knocking from non-active group`);
     }
 
     const knockId = Date.now().toString();
@@ -286,7 +276,7 @@ app.post("/knock-attempt", async (req, res) => {
 
     await Promise.all(messages.map(msg => admin.messaging().send(msg)));
     
-    console.log(`📤 Knock attempt to ${receiverTokens.length} receiver(s)`);
+    console.log(`Knock attempt sent`);
     
     res.json({ 
       success: true, 
@@ -301,7 +291,6 @@ app.post("/knock-attempt", async (req, res) => {
   }
 });
 
-// ✅ Report IP (with 2-second delay)
 app.post("/report-ip", async (req, res) => {
   try {
     const { token, knockId } = req.body;
@@ -325,7 +314,6 @@ app.post("/report-ip", async (req, res) => {
     pendingData.receiversReported.add(token);
     const isSameNetwork = (receiverIp === pendingData.senderIp);
     
-    // ✅ 2-SECOND DELAY before sending actual knock
     setTimeout(async () => {
       if (isSameNetwork && pendingKnocks.has(knockId)) {
         const message = {
@@ -340,9 +328,9 @@ app.post("/report-ip", async (req, res) => {
           }
         };
         await admin.messaging().send(message);
-        console.log(`✅ Actual knock sent after 2-second delay`);
+        console.log(`Actual knock sent`);
       }
-    }, 2000); // ⏱️ Changed from 3000ms to 2000ms
+    }, 2000);
 
     res.json({ success: true, isSameNetwork: isSameNetwork });
   } catch (err) {
@@ -353,6 +341,5 @@ app.post("/report-ip", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚪 WiFi Knock Knock Server on port ${PORT}`);
-  console.log(`⏱️  Delay between notifications: 2 seconds`);
+  console.log(`Server running on port ${PORT}`);
 });
