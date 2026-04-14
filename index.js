@@ -25,7 +25,6 @@ app.use(express.json());
  */
 const pendingKnocks = new Map();
 const KNOCK_TTL_MS = 20_000;
-const ACTUAL_KNOCK_DELAY_MS = 2000;
 
 /* ----------------------------- Helpers ----------------------------- */
 
@@ -368,27 +367,6 @@ app.post("/report-ip", requireAuth, async (req, res) => {
     if (!isMember(doc.data(), uid)) return fail(res, 403, "Not a member");
 
     const isSameNetwork = receiverIp === pending.senderIp;
-
-    // Keep your delay behavior
-    setTimeout(async () => {
-      try {
-        if (!isSameNetwork) return;
-        if (!pendingKnocks.has(knockId)) return;
-
-        const message = {
-          data: {
-            title: "🚪 Door Knock!",
-            body: "Someone is at your door!",
-            type: "actual-knock",
-          },
-          android: { priority: "high" },
-        };
-
-        await sendToUserAllDevices(uid, message);
-      } catch (e) {
-        console.error("Actual knock send error:", e);
-      }
-    }, ACTUAL_KNOCK_DELAY_MS);
 
     ok(res, { success: true, isSameNetwork });
   } catch (e) {
