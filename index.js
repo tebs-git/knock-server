@@ -450,5 +450,4 @@ app.post("/get-group-members", requireAuth, async (req, res) => {
 /* ----------------------------- Start ----------------------------- */
 
 const PORT = process.env.PORT || 3000;
-app.listen(PO
-RT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
