@@ -96,6 +96,12 @@ function isMember(groupData, uid) {
  * Stores device token under user_devices/{uid}/tokens.{fcmToken}
  * (Using object map so you don’t need subcollections)
  */
+async function getUserDoc(uid) {
+  const doc = await firestore.collection("users").doc(uid).get();
+  if (!doc.exists) return { displayName: "Unknown", groupsOwned: 0, groupsJoined: 0 };
+  return { displayName: "Unknown", groupsOwned: 0, groupsJoined: 0, ...doc.data() };
+}
+
 async function upsertDeviceToken(uid, fcmToken) {
   const ref = firestore.collection("user_devices").doc(uid);
   await ref.set(
@@ -172,16 +178,37 @@ app.post("/create-group", requireAuth, async (req, res) => {
     const { groupName } = req.body;
     if (!groupName) return fail(res, 400, "groupName required");
 
+    const userData = await getUserDoc(uid);
+
+    if (userData.groupsOwned >= 1) return fail(res, 403, "You already own a group");
+    if (userData.groupsJoined >= 3) return fail(res, 403, "You have reached the maximum of 3 groups");
+
     const groupCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const now = Date.now();
 
     await firestore.collection("groups").doc(groupCode).set({
       name: groupName,
       code: groupCode,
-      createdAt: Date.now(),
+      createdAt: now,
+      adminUid: uid,
+      coAdminUid: null,
       members: {
-        [uid]: { joinedAt: Date.now() },
+        [uid]: {
+          displayName: userData.displayName,
+          role: "admin",
+          joinedAt: now,
+          hasOwnGroup: false,
+        },
       },
     });
+
+    await firestore.collection("users").doc(uid).set(
+      {
+        groupsOwned: admin.firestore.FieldValue.increment(1),
+        groupsJoined: admin.firestore.FieldValue.increment(1),
+      },
+      { merge: true }
+    );
 
     await setUserActiveGroup(uid, groupCode);
 
@@ -198,10 +225,28 @@ app.post("/join-group", requireAuth, async (req, res) => {
     const { groupCode } = req.body;
     if (!groupCode) return fail(res, 400, "groupCode required");
 
+    const userData = await getUserDoc(uid);
+    if (userData.groupsJoined >= 3) return fail(res, 403, "You have reached the maximum of 3 groups");
+
     const { clean, ref, doc } = await getGroupDoc(groupCode);
     if (!doc.exists) return fail(res, 404, "Group not found");
 
-    await ref.update({ [`members.${uid}`]: { joinedAt: Date.now() } });
+    const now = Date.now();
+
+    await ref.update({
+      [`members.${uid}`]: {
+        displayName: userData.displayName,
+        role: "member",
+        joinedAt: now,
+        hasOwnGroup: false,
+      },
+    });
+
+    await firestore.collection("users").doc(uid).set(
+      { groupsJoined: admin.firestore.FieldValue.increment(1) },
+      { merge: true }
+    );
+
     await setUserActiveGroup(uid, clean);
 
     ok(res, {
@@ -371,6 +416,32 @@ app.post("/report-ip", requireAuth, async (req, res) => {
     ok(res, { success: true, isSameNetwork });
   } catch (e) {
     console.error("Report IP error:", e);
+    fail(res, 500, e.message);
+  }
+});
+
+app.post("/get-group-members", requireAuth, async (req, res) => {
+  try {
+    const uid = req.uid;
+    const { groupCode } = req.body;
+    if (!groupCode) return fail(res, 400, "groupCode required");
+
+    const { doc } = await getGroupDoc(groupCode);
+    if (!doc.exists) return fail(res, 404, "Group not found");
+
+    const groupData = doc.data();
+    if (!isMember(groupData, uid)) return fail(res, 403, "Not a member");
+
+    const members = Object.entries(groupData.members || {}).map(([memberUid, info]) => ({
+      uid: memberUid,
+      displayName: info.displayName || "Unknown",
+      role: info.role || "member",
+      hasOwnGroup: info.hasOwnGroup || false,
+    }));
+
+    ok(res, { success: true, members });
+  } catch (e) {
+    console.error("Get group members error:", e);
     fail(res, 500, e.message);
   }
 });
