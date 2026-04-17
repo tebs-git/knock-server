@@ -279,6 +279,7 @@ app.post("/my-groups", requireAuth, async (req, res) => {
           groupName: data.name,
           memberCount: Object.keys(data.members).length,
           is_active: d.id === activeGroup,
+          isOwner: data.adminUid === uid,
         });
       }
     });
