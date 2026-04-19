@@ -433,12 +433,25 @@ app.post("/get-group-members", requireAuth, async (req, res) => {
     const groupData = doc.data();
     if (!isMember(groupData, uid)) return fail(res, 403, "Not a member");
 
-    const members = Object.entries(groupData.members || {}).map(([memberUid, info]) => ({
-      uid: memberUid,
-      displayName: info.displayName || "Unknown",
-      role: info.role || "member",
-      hasOwnGroup: info.hasOwnGroup || false,
-    }));
+    const memberEntries = Object.entries(groupData.members || {});
+
+    // Fetch current display names from users collection (source of truth)
+    const userDocs = await Promise.all(
+      memberEntries.map(([memberUid]) =>
+        firestore.collection("users").doc(memberUid).get()
+      )
+    );
+
+    const members = memberEntries.map(([memberUid, info], i) => {
+      const userDoc = userDocs[i];
+      const freshName = userDoc.exists ? userDoc.data().displayName : null;
+      return {
+        uid: memberUid,
+        displayName: freshName || info.displayName || "Unknown",
+        role: info.role || "member",
+        hasOwnGroup: info.hasOwnGroup || false,
+      };
+    });
 
     ok(res, { success: true, members });
   } catch (e) {
