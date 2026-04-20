@@ -445,10 +445,14 @@ app.post("/get-group-members", requireAuth, async (req, res) => {
     const members = memberEntries.map(([memberUid, info], i) => {
       const userDoc = userDocs[i];
       const freshName = userDoc.exists ? userDoc.data().displayName : null;
+      let role;
+      if (memberUid === groupData.adminUid) role = "admin";
+      else if (memberUid === groupData.coAdminUid) role = "co-admin";
+      else role = info.role || "member";
       return {
         uid: memberUid,
         displayName: freshName || info.displayName || "Unknown",
-        role: info.role || "member",
+        role,
         hasOwnGroup: info.hasOwnGroup || false,
       };
     });
