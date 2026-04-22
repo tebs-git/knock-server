@@ -261,6 +261,55 @@ app.post("/join-group", requireAuth, async (req, res) => {
   }
 });
 
+app.post("/delete-group", requireAuth, async (req, res) => {
+  try {
+    const uid = req.uid;
+    const { groupCode } = req.body;
+    if (!groupCode) return fail(res, 400, "groupCode required");
+
+    const { clean, ref, doc } = await getGroupDoc(groupCode);
+    if (!doc.exists) return fail(res, 404, "Group not found");
+
+    const groupData = doc.data();
+    if (groupData.adminUid !== uid) return fail(res, 403, "Only the group admin can delete this group");
+
+    const memberUids = Object.keys(groupData.members || {});
+
+    // Delete group + update all member counters atomically
+    const batch = firestore.batch();
+    batch.delete(ref);
+    for (const memberUid of memberUids) {
+      const userRef = firestore.collection("users").doc(memberUid);
+      const updates = { groupsJoined: admin.firestore.FieldValue.increment(-1) };
+      if (memberUid === uid) updates.groupsOwned = admin.firestore.FieldValue.increment(-1);
+      batch.update(userRef, updates);
+    }
+    await batch.commit();
+
+    // Clear stale active_group preference for any member who had this group active
+    const prefDocs = await Promise.all(
+      memberUids.map((memberUid) =>
+        firestore.collection("user_preferences").doc(memberUid).get()
+      )
+    );
+    await Promise.allSettled(
+      memberUids
+        .filter((_, i) => prefDocs[i].exists && prefDocs[i].data()?.active_group === clean)
+        .map((memberUid) =>
+          firestore.collection("user_preferences").doc(memberUid).set(
+            { active_group: null },
+            { merge: true }
+          )
+        )
+    );
+
+    ok(res, { success: true });
+  } catch (e) {
+    console.error("Delete group error:", e);
+    fail(res, 500, e.message);
+  }
+});
+
 app.post("/my-groups", requireAuth, async (req, res) => {
   try {
     const uid = req.uid;
