@@ -499,18 +499,28 @@ app.post("/get-group-members", requireAuth, async (req, res) => {
 
     const memberEntries = Object.entries(groupData.members || {});
 
-    // Fetch display names, device registrations, and active group prefs in parallel
-    const [userDocs, deviceDocs, prefDocs] = await Promise.all([
+    // Fetch display names and device registrations in parallel
+    const [userDocs, deviceDocs] = await Promise.all([
       Promise.all(memberEntries.map(([memberUid]) =>
         firestore.collection("users").doc(memberUid).get()
       )),
       Promise.all(memberEntries.map(([memberUid]) =>
         firestore.collection("user_devices").doc(memberUid).get()
       )),
-      Promise.all(memberEntries.map(([memberUid]) =>
-        firestore.collection("user_preferences").doc(memberUid).get()
-      )),
     ]);
+
+    // Fetch active group prefs separately — failure here must not crash the endpoint
+    let prefDocs;
+    try {
+      prefDocs = await Promise.all(
+        memberEntries.map(([memberUid]) =>
+          firestore.collection("user_preferences").doc(memberUid).get()
+        )
+      );
+    } catch (e) {
+      console.error("Failed to fetch user prefs for members:", e);
+      prefDocs = memberEntries.map(() => ({ exists: false, data: () => ({}) }));
+    }
 
     const members = memberEntries.map(([memberUid, info], i) => {
       const userDoc = userDocs[i];
