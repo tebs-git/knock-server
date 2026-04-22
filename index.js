@@ -411,9 +411,24 @@ app.post("/knock-attempt", requireAuth, async (req, res) => {
     const knockId = Date.now().toString();
     createKnock(knockId, uid, senderIp, clean);
 
-    const receiverUids = Object.keys(groupData.members || {}).filter((m) => m !== uid);
-    if (receiverUids.length === 0) {
+    const allReceiverUids = Object.keys(groupData.members || {}).filter((m) => m !== uid);
+    if (allReceiverUids.length === 0) {
       return fail(res, 400, "No one else in group");
+    }
+
+    // Only knock members who currently have this group as their active group
+    const prefDocs = await Promise.all(
+      allReceiverUids.map((ruid) =>
+        firestore.collection("user_preferences").doc(ruid).get()
+      )
+    );
+    const receiverUids = allReceiverUids.filter((_, i) => {
+      const pref = prefDocs[i];
+      return pref.exists && pref.data()?.active_group === clean;
+    });
+
+    if (receiverUids.length === 0) {
+      return fail(res, 400, "No one in this group is currently active here");
     }
 
     const message = {
