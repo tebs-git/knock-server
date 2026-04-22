@@ -435,16 +435,22 @@ app.post("/get-group-members", requireAuth, async (req, res) => {
 
     const memberEntries = Object.entries(groupData.members || {});
 
-    // Fetch current display names from users collection (source of truth)
-    const userDocs = await Promise.all(
-      memberEntries.map(([memberUid]) =>
+    // Fetch display names and device registrations in parallel
+    const [userDocs, deviceDocs] = await Promise.all([
+      Promise.all(memberEntries.map(([memberUid]) =>
         firestore.collection("users").doc(memberUid).get()
-      )
-    );
+      )),
+      Promise.all(memberEntries.map(([memberUid]) =>
+        firestore.collection("user_devices").doc(memberUid).get()
+      )),
+    ]);
 
     const members = memberEntries.map(([memberUid, info], i) => {
       const userDoc = userDocs[i];
+      const deviceDoc = deviceDocs[i];
       const freshName = userDoc.exists ? userDoc.data().displayName : null;
+      const hasDevice = deviceDoc.exists &&
+        Object.keys(deviceDoc.data()?.tokens || {}).length > 0;
       let role;
       if (memberUid === groupData.adminUid) role = "admin";
       else if (memberUid === groupData.coAdminUid) role = "co-admin";
@@ -454,6 +460,7 @@ app.post("/get-group-members", requireAuth, async (req, res) => {
         displayName: freshName || info.displayName || "Unknown",
         role,
         hasOwnGroup: info.hasOwnGroup || false,
+        hasDevice,
       };
     });
 
