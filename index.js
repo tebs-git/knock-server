@@ -509,27 +509,12 @@ app.post("/get-group-members", requireAuth, async (req, res) => {
       )),
     ]);
 
-    // Fetch active group prefs separately — failure here must not crash the endpoint
-    let prefDocs;
-    try {
-      prefDocs = await Promise.all(
-        memberEntries.map(([memberUid]) =>
-          firestore.collection("user_preferences").doc(memberUid).get()
-        )
-      );
-    } catch (e) {
-      console.error("Failed to fetch user prefs for members:", e);
-      prefDocs = memberEntries.map(() => ({ exists: false, data: () => ({}) }));
-    }
-
     const members = memberEntries.map(([memberUid, info], i) => {
       const userDoc = userDocs[i];
       const deviceDoc = deviceDocs[i];
-      const prefDoc = prefDocs[i];
       const freshName = userDoc.exists ? userDoc.data().displayName : null;
       const hasDevice = deviceDoc.exists &&
         Object.keys(deviceDoc.data()?.tokens || {}).length > 0;
-      const isActiveHere = prefDoc.exists && prefDoc.data()?.active_group === clean;
       let role;
       if (memberUid === groupData.adminUid) role = "admin";
       else if (memberUid === groupData.coAdminUid) role = "co-admin";
@@ -540,13 +525,43 @@ app.post("/get-group-members", requireAuth, async (req, res) => {
         role,
         hasOwnGroup: info.hasOwnGroup || false,
         hasDevice,
-        isActiveHere,
       };
     });
 
     ok(res, { success: true, members });
   } catch (e) {
     console.error("Get group members error:", e);
+    fail(res, 500, e.message);
+  }
+});
+
+app.post("/get-active-members", requireAuth, async (req, res) => {
+  try {
+    const uid = req.uid;
+    const { groupCode } = req.body;
+    if (!groupCode) return fail(res, 400, "groupCode required");
+
+    const { clean, doc } = await getGroupDoc(groupCode);
+    if (!doc.exists) return fail(res, 404, "Group not found");
+
+    const groupData = doc.data();
+    if (!isMember(groupData, uid)) return fail(res, 403, "Not a member");
+
+    const memberUids = Object.keys(groupData.members || {});
+    const prefDocs = await Promise.all(
+      memberUids.map((muid) =>
+        firestore.collection("user_preferences").doc(muid).get()
+      )
+    );
+
+    const activeUids = memberUids.filter((_, i) => {
+      const pref = prefDocs[i];
+      return pref.exists && pref.data()?.active_group === clean;
+    });
+
+    ok(res, { success: true, activeUids });
+  } catch (e) {
+    console.error("Get active members error:", e);
     fail(res, 500, e.message);
   }
 });
