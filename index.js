@@ -291,6 +291,20 @@ app.post("/join-group", requireAuth, async (req, res) => {
       await batch.commit();
 
       await setUserActiveGroup(uid, gCode);
+
+      // Notify admin that a new member joined
+      const adminUid = groupData.adminUid;
+      if (adminUid && adminUid !== uid) {
+        await sendToUserAllDevices(adminUid, {
+          data: {
+            type: "member-joined",
+            groupCode: gCode,
+            displayName: userData.displayName,
+          },
+          android: { priority: "high" },
+        });
+      }
+
       return ok(res, { success: true, groupName: groupData.name, groupCode: gCode, is_active: true });
     }
 
