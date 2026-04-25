@@ -551,6 +551,39 @@ app.post("/get-active-members", requireAuth, async (req, res) => {
   }
 });
 
+/**
+ * sync-user-counters
+ * Recalculates groupsOwned and groupsJoined from actual group membership
+ * and writes the corrected values back to users/{uid}.
+ */
+app.post("/sync-user-counters", requireAuth, async (req, res) => {
+  try {
+    const uid = req.uid;
+
+    const groupsSnapshot = await firestore.collection("groups").get();
+    let groupsJoined = 0;
+    let groupsOwned = 0;
+
+    groupsSnapshot.forEach((d) => {
+      const data = d.data();
+      if (data.members && data.members[uid]) {
+        groupsJoined++;
+        if (data.adminUid === uid) groupsOwned++;
+      }
+    });
+
+    await firestore.collection("users").doc(uid).set(
+      { groupsJoined, groupsOwned },
+      { merge: true }
+    );
+
+    ok(res, { success: true, groupsJoined, groupsOwned });
+  } catch (e) {
+    console.error("Sync user counters error:", e);
+    fail(res, 500, e.message);
+  }
+});
+
 /* ----------------------------- Start
 ----------------------------- */
 
