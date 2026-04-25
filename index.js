@@ -552,6 +552,46 @@ app.post("/get-active-members", requireAuth, async (req, res) => {
 });
 
 /**
+ * leave-group
+ * Removes the authenticated user from the group. Admin must delete instead.
+ */
+app.post("/leave-group", requireAuth, async (req, res) => {
+  try {
+    const uid = req.uid;
+    const { groupCode } = req.body;
+    if (!groupCode) return fail(res, 400, "groupCode required");
+
+    const { clean, ref, doc } = await getGroupDoc(groupCode);
+    if (!doc.exists) return fail(res, 404, "Group not found");
+
+    const groupData = doc.data();
+    if (!isMember(groupData, uid)) return fail(res, 403, "Not a member of this group");
+    if (groupData.adminUid === uid) return fail(res, 403, "Group admin cannot leave. Delete the group instead.");
+
+    const batch = firestore.batch();
+    batch.update(ref, { [`members.${uid}`]: admin.firestore.FieldValue.delete() });
+    batch.update(firestore.collection("users").doc(uid), {
+      groupsJoined: admin.firestore.FieldValue.increment(-1),
+    });
+    await batch.commit();
+
+    // Clear active_group preference if it pointed at this group
+    const prefDoc = await firestore.collection("user_preferences").doc(uid).get();
+    if (prefDoc.exists && prefDoc.data()?.active_group === clean) {
+      await firestore.collection("user_preferences").doc(uid).set(
+        { active_group: null },
+        { merge: true }
+      );
+    }
+
+    ok(res, { success: true });
+  } catch (e) {
+    console.error("Leave group error:", e);
+    fail(res, 500, e.message);
+  }
+});
+
+/**
  * sync-user-counters
  * Recalculates groupsOwned and groupsJoined from actual group membership
  * and writes the corrected values back to users/{uid}.
