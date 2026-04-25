@@ -219,6 +219,35 @@ app.post("/create-group", requireAuth, async (req, res) => {
   }
 });
 
+app.post("/create-invite", requireAuth, async (req, res) => {
+  try {
+    const uid = req.uid;
+    const { groupCode } = req.body;
+    if (!groupCode) return fail(res, 400, "groupCode required");
+
+    const { clean, doc } = await getGroupDoc(groupCode);
+    if (!doc.exists) return fail(res, 404, "Group not found");
+    if (doc.data().adminUid !== uid) return fail(res, 403, "Only the group admin can create invites");
+
+    const inviteCode = Math.random().toString(36).substring(2, 10).toUpperCase();
+    const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+
+    await firestore.collection("invites").doc(inviteCode).set({
+      groupCode: clean,
+      createdBy: uid,
+      createdAt: Date.now(),
+      expiresAt,
+      usedBy: null,
+      usedAt: null,
+    });
+
+    ok(res, { success: true, inviteCode, expiresAt });
+  } catch (e) {
+    console.error("Create invite error:", e);
+    fail(res, 500, e.message);
+  }
+});
+
 app.post("/join-group", requireAuth, async (req, res) => {
   try {
     const uid = req.uid;
@@ -228,6 +257,44 @@ app.post("/join-group", requireAuth, async (req, res) => {
     const userData = await getUserDoc(uid);
     if (userData.groupsJoined >= 3) return fail(res, 403, "You have reached the maximum of 3 groups");
 
+    const cleanInput = groupCode.toUpperCase();
+
+    // Check if this is an invite code first
+    const inviteRef = firestore.collection("invites").doc(cleanInput);
+    const inviteDoc = await inviteRef.get();
+
+    if (inviteDoc.exists) {
+      const invite = inviteDoc.data();
+      if (invite.usedBy) return fail(res, 400, "This invite code has already been used");
+      if (invite.expiresAt < Date.now()) return fail(res, 400, "This invite code has expired");
+
+      const { clean: gCode, ref: groupRef, doc: groupDoc } = await getGroupDoc(invite.groupCode);
+      if (!groupDoc.exists) return fail(res, 404, "Group no longer exists");
+
+      const groupData = groupDoc.data();
+      if (isMember(groupData, uid)) return fail(res, 400, "You are already in this group");
+
+      const now = Date.now();
+      const batch = firestore.batch();
+      batch.update(groupRef, {
+        [`members.${uid}`]: {
+          displayName: userData.displayName,
+          role: "member",
+          joinedAt: now,
+          hasOwnGroup: false,
+        },
+      });
+      batch.update(firestore.collection("users").doc(uid), {
+        groupsJoined: admin.firestore.FieldValue.increment(1),
+      });
+      batch.update(inviteRef, { usedBy: uid, usedAt: now });
+      await batch.commit();
+
+      await setUserActiveGroup(uid, gCode);
+      return ok(res, { success: true, groupName: groupData.name, groupCode: gCode, is_active: true });
+    }
+
+    // Regular group code flow
     const { clean, ref, doc } = await getGroupDoc(groupCode);
     if (!doc.exists) return fail(res, 404, "Group not found");
 
