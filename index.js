@@ -479,7 +479,7 @@ app.post("/get-active-group", requireAuth, async (req, res) => {
 app.post("/knock-attempt", requireAuth, async (req, res) => {
   try {
     const uid = req.uid;
-    const { groupCode } = req.body;
+    const { groupCode, senderLocalIp } = req.body;
     if (!groupCode) return fail(res, 400, "groupCode required");
 
     const senderIp = getCompletePublicIp(req);
@@ -497,6 +497,10 @@ app.post("/knock-attempt", requireAuth, async (req, res) => {
       return fail(res, 400, "No one else in group");
     }
 
+    // Look up sender's display name for the reply screen
+    const senderData = await getUserDoc(uid);
+    const senderName = senderData.displayName || "Someone";
+
     const message = {
       data: {
         title: "🔍 Knock Attempt",
@@ -504,6 +508,8 @@ app.post("/knock-attempt", requireAuth, async (req, res) => {
         type: "knock-attempt",
         knockId,
         senderUid: uid,
+        senderName,
+        senderLocalIp: senderLocalIp || "",
       },
       android: {
         priority: "high",
